@@ -1,0 +1,3 @@
+ShortsMaker Studio v0.5.1
+Hotfix: Windows CMD installer encoding/path fix
+Build: 2026-09-11
