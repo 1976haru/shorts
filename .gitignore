@@ -16,3 +16,6 @@ outputs/
 
 Thumbs.db
 .DS_Store
+
+*.lnk
+*.zip
