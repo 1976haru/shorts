@@ -229,6 +229,7 @@ def analyze_top_highlights(audio_path, target_duration=45.0, top_n=3):
 
 
 MOTION_PATTERNS = [
+    "off",
     "slow_zoom_in",
     "slow_zoom_out",
     "pan_left_to_right",
@@ -383,6 +384,8 @@ def _beat_expr(beat_reactivity, transition_interval, fps):
 
 def _motion_expressions(motion_pattern, frames, fps, zoom_pct, motion_intensity, transition_interval, beat_reactivity):
     motion_pattern = _normalize_motion(motion_pattern)
+    if motion_pattern == "off":
+        return "1.0", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)", ""
     strength = INTENSITY_SCALE.get(motion_intensity, 1.0)
     zoom_pct = max(0.0, min(float(zoom_pct), 15.0)) * strength
     frame_span = max(1, int(frames) - 1)
@@ -490,7 +493,13 @@ def render_short(
 ):
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     duration = max(1.0, float(duration))
+    motion_pattern = _normalize_motion(motion_pattern)
+    motion_off = motion_pattern == "off"
     fade_sec = max(0.0, min(float(fade_sec), duration / 4))
+    if motion_off:
+        fade_sec = 0.0
+        beat_reactivity = "off"
+        overlay_effect = "none"
     frames = max(1, int(duration * fps))
     transition_interval = max(3.0, float(transition_interval or 5))
     z, x, y, rotate_filter = _motion_expressions(

@@ -20,21 +20,22 @@ from shorts_core import *
 APP_VERSION = "0.5"
 SETTINGS_FILE = Path(__file__).with_name("settings.json")
 
-BG = "#111827"
-SURFACE = "#182233"
-SURFACE_2 = "#1f2a3d"
-SURFACE_3 = "#263449"
-BORDER = "#34445f"
-TEXT = "#f8fafc"
-MUTED = "#aeb9cc"
-SUBTLE = "#7f8ba3"
-ACCENT = "#4cc9f0"
-ACCENT_2 = "#7c5cff"
-SUCCESS = "#36d399"
-WARNING = "#ffd166"
-DANGER = "#ff5c7a"
+BG = "#f4f6fb"
+SURFACE = "#ffffff"
+SURFACE_2 = "#eef2f7"
+SURFACE_3 = "#e3e9f3"
+BORDER = "#c8d2e1"
+TEXT = "#1f2937"
+MUTED = "#5f6b7a"
+SUBTLE = "#7c8798"
+ACCENT = "#2563eb"
+ACCENT_2 = "#7c3aed"
+SUCCESS = "#059669"
+WARNING = "#d97706"
+DANGER = "#e11d48"
 
 MOTION_OPTIONS = [
+    ("끔", "off"),
     ("감성형 랜덤", "sentimental_random"),
     ("천천히 줌인", "slow_zoom_in"),
     ("천천히 줌아웃", "slow_zoom_out"),
@@ -160,6 +161,19 @@ class App(TkinterDnD.Tk):
         self.output_dir = tk.StringVar(value=str(Path.home() / "Videos" / "ShortsMaker"))
         self.batch_input = tk.StringVar()
         self.batch_output = tk.StringVar(value=str(Path.home() / "Videos" / "ShortsMaker_Batch"))
+        self.dual_audio_a = tk.StringVar()
+        self.dual_image_a = tk.StringVar()
+        self.dual_subtitle_a = tk.StringVar()
+        self.dual_output_a = tk.StringVar(value=str(Path.home() / "Videos" / "ShortsMaker_Dual"))
+        self.dual_name_a = tk.StringVar()
+        self.dual_audio_b = tk.StringVar()
+        self.dual_image_b = tk.StringVar()
+        self.dual_subtitle_b = tk.StringVar()
+        self.dual_output_b = tk.StringVar(value=str(Path.home() / "Videos" / "ShortsMaker_Dual"))
+        self.dual_name_b = tk.StringVar()
+        self.dual_status_a = tk.StringVar(value="A세트 대기")
+        self.dual_status_b = tk.StringVar(value="B세트 대기")
+        self.preview_slot = tk.StringVar(value="single")
         self.channel_name = tk.StringVar(value="My Music Channel")
         self.meta_template = tk.StringVar(value="감성형")
         self.auto_meta = tk.BooleanVar(value=True)
@@ -172,6 +186,8 @@ class App(TkinterDnD.Tk):
         self.wave_total = 0.0
         self.preview_canvas = None
         self.preview_photo = None
+        self.dual_preview_canvas = None
+        self.dual_preview_photo = None
         self.preview_after_id = None
         self.preview_started_at = time.perf_counter()
         self._preview_source_path = None
@@ -222,20 +238,20 @@ class App(TkinterDnD.Tk):
         s.configure("TButton", padding=(12, 8), background=SURFACE_3, foreground=TEXT, bordercolor=BORDER)
         s.map(
             "TButton",
-            background=[("disabled", "#20283a"), ("pressed", "#35445d"), ("active", "#324158")],
-            foreground=[("disabled", "#68748a"), ("active", TEXT)],
+            background=[("disabled", "#eef1f6"), ("pressed", "#d4deed"), ("active", "#dbe5f4")],
+            foreground=[("disabled", "#9aa5b5"), ("active", TEXT)],
             bordercolor=[("focus", ACCENT), ("active", ACCENT)],
         )
         s.configure("Primary.TButton", background=ACCENT_2, foreground="#ffffff", bordercolor=ACCENT_2)
         s.map(
             "Primary.TButton",
-            background=[("disabled", "#2b3144"), ("pressed", "#5f45d8"), ("active", "#8a75ff")],
-            foreground=[("disabled", "#78849a"), ("active", "#ffffff")],
+            background=[("disabled", "#dcd8f4"), ("pressed", "#5b21b6"), ("active", "#6d28d9")],
+            foreground=[("disabled", "#8b86a8"), ("active", "#ffffff")],
         )
-        s.configure("Accent.TButton", background="#1f7a9d", foreground="#ffffff", bordercolor=ACCENT)
-        s.map("Accent.TButton", background=[("pressed", "#17617d"), ("active", "#2698c3")])
-        s.configure("Danger.TButton", background="#7d2639", foreground="#ffffff", bordercolor=DANGER)
-        s.map("Danger.TButton", background=[("pressed", "#6a2030"), ("active", "#a33149")])
+        s.configure("Accent.TButton", background=ACCENT, foreground="#ffffff", bordercolor=ACCENT)
+        s.map("Accent.TButton", background=[("pressed", "#1d4ed8"), ("active", "#2563eb")])
+        s.configure("Danger.TButton", background=DANGER, foreground="#ffffff", bordercolor=DANGER)
+        s.map("Danger.TButton", background=[("pressed", "#be123c"), ("active", "#f43f5e")])
 
         s.configure("TNotebook", background=BG, borderwidth=0)
         s.configure(
@@ -255,7 +271,7 @@ class App(TkinterDnD.Tk):
         s.configure(
             "TEntry",
             padding=(8, 7),
-            fieldbackground="#0f1724",
+            fieldbackground="#ffffff",
             foreground=TEXT,
             bordercolor=BORDER,
             lightcolor=BORDER,
@@ -264,15 +280,15 @@ class App(TkinterDnD.Tk):
         )
         s.map(
             "TEntry",
-            fieldbackground=[("disabled", "#151c2a"), ("focus", "#121d2f")],
+            fieldbackground=[("disabled", "#edf1f6"), ("focus", "#fbfdff")],
             bordercolor=[("focus", ACCENT), ("active", ACCENT)],
-            foreground=[("disabled", "#748197")],
+            foreground=[("disabled", "#9aa5b5")],
         )
 
         s.configure(
             "TCombobox",
             padding=(8, 7),
-            fieldbackground="#0f1724",
+            fieldbackground="#ffffff",
             background=SURFACE_3,
             foreground=TEXT,
             bordercolor=BORDER,
@@ -280,7 +296,7 @@ class App(TkinterDnD.Tk):
         )
         s.map(
             "TCombobox",
-            fieldbackground=[("readonly", "#0f1724"), ("focus", "#121d2f")],
+            fieldbackground=[("readonly", "#ffffff"), ("focus", "#fbfdff")],
             foreground=[("readonly", TEXT)],
             bordercolor=[("focus", ACCENT), ("active", ACCENT)],
         )
@@ -290,35 +306,35 @@ class App(TkinterDnD.Tk):
             background=BG,
             foreground=TEXT,
             focuscolor=ACCENT,
-            indicatorcolor="#0f1724",
+            indicatorcolor="#ffffff",
         )
         s.map(
             "TCheckbutton",
-            foreground=[("disabled", "#6f7b91"), ("active", "#ffffff")],
+            foreground=[("disabled", "#9aa5b5"), ("active", TEXT)],
             background=[("active", BG)],
             indicatorcolor=[("selected", ACCENT), ("active", SURFACE_3)],
         )
-        s.configure("TRadiobutton", background=BG, foreground=TEXT, indicatorcolor="#0f1724")
+        s.configure("TRadiobutton", background=BG, foreground=TEXT, indicatorcolor="#ffffff")
         s.map(
             "TRadiobutton",
-            foreground=[("disabled", "#6f7b91"), ("active", "#ffffff")],
+            foreground=[("disabled", "#9aa5b5"), ("active", TEXT)],
             indicatorcolor=[("selected", ACCENT), ("active", SURFACE_3)],
         )
 
-        s.configure("Horizontal.TScale", background=BG, troughcolor="#0f1724", bordercolor=BORDER, sliderthickness=18)
-        s.map("Horizontal.TScale", background=[("active", ACCENT)], troughcolor=[("active", "#142033")])
+        s.configure("Horizontal.TScale", background=BG, troughcolor="#dbe4f0", bordercolor=BORDER, sliderthickness=18)
+        s.map("Horizontal.TScale", background=[("active", ACCENT)], troughcolor=[("active", "#d8e7ff")])
 
-        s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor="#0f1724", bordercolor=BORDER)
+        s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor="#dbe4f0", bordercolor=BORDER)
         s.configure(
             "Treeview",
-            background="#111a29",
-            fieldbackground="#111a29",
+            background="#ffffff",
+            fieldbackground="#ffffff",
             foreground=TEXT,
             rowheight=28,
             bordercolor=BORDER,
         )
         s.configure("Treeview.Heading", background=SURFACE_3, foreground=TEXT, font=("Malgun Gothic", 10, "bold"))
-        s.map("Treeview", background=[("selected", "#294b6d")], foreground=[("selected", "#ffffff")])
+        s.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", TEXT)])
         s.configure("Vertical.TScrollbar", background=SURFACE_3, troughcolor=BG, arrowcolor=TEXT, bordercolor=BORDER)
 
     def _build(self):
@@ -336,14 +352,18 @@ class App(TkinterDnD.Tk):
         tabs = ttk.Notebook(self)
         tabs.pack(fill="both", expand=True, padx=14, pady=10)
         self.single = ttk.Frame(tabs)
+        self.dual = ttk.Frame(tabs)
         self.batch = ttk.Frame(tabs)
         self.publish = ttk.Frame(tabs)
         tabs.add(self.single, text="단일 제작")
+        tabs.add(self.dual, text="2개 동시 제작")
         tabs.add(self.batch, text="일괄 제작")
         tabs.add(self.publish, text="업로드 준비")
 
         self._common(self.single)
         self._single_ui()
+        self._common(self.dual)
+        self._dual_ui()
         self._common(self.batch)
         self._batch_ui()
         self._publish_ui()
@@ -442,7 +462,7 @@ class App(TkinterDnD.Tk):
 
         wf = ttk.LabelFrame(left, text="파형 / TOP3 위치")
         wf.pack(fill="x", pady=6)
-        self.canvas = tk.Canvas(wf, height=150, bg="#0f1724", highlightthickness=1, highlightbackground=BORDER)
+        self.canvas = tk.Canvas(wf, height=150, bg="#ffffff", highlightthickness=1, highlightbackground=BORDER)
         self.canvas.pack(fill="x", expand=True, padx=8, pady=8)
 
         c = ttk.LabelFrame(left, text="하이라이트 TOP3")
@@ -459,11 +479,101 @@ class App(TkinterDnD.Tk):
 
         pv = ttk.LabelFrame(right, text="숏츠 미리보기")
         pv.pack(fill="y", expand=False)
-        self.preview_canvas = tk.Canvas(pv, width=280, height=498, bg="#08111f", highlightthickness=1, highlightbackground=BORDER)
+        self.preview_canvas = tk.Canvas(pv, width=280, height=498, bg="#edf3fb", highlightthickness=1, highlightbackground=BORDER)
         self.preview_canvas.pack(padx=10, pady=10)
         ttk.Label(pv, textvariable=self._preview_summary_var(), style="Muted.TLabel", wraplength=280, justify="center").pack(
             fill="x", padx=10, pady=(0, 10)
         )
+
+    def _dual_ui(self):
+        b = ttk.Frame(self.dual)
+        b.pack(fill="both", expand=True, padx=10, pady=4)
+
+        body = ttk.Frame(b)
+        body.pack(fill="both", expand=True)
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        right = ttk.Frame(body)
+        right.pack(side="right", fill="y")
+
+        slots = ttk.Frame(left)
+        slots.pack(fill="x")
+        self._dual_slot_ui(
+            slots,
+            "A세트",
+            self.dual_audio_a,
+            self.dual_image_a,
+            self.dual_subtitle_a,
+            self.dual_output_a,
+            self.dual_name_a,
+            self.dual_status_a,
+            "A",
+        )
+        self._dual_slot_ui(
+            slots,
+            "B세트",
+            self.dual_audio_b,
+            self.dual_image_b,
+            self.dual_subtitle_b,
+            self.dual_output_b,
+            self.dual_name_b,
+            self.dual_status_b,
+            "B",
+        )
+
+        actions = ttk.Frame(left)
+        actions.pack(fill="x", pady=8)
+        ttk.Button(actions, text="숏츠 2개 제작", command=self.start_dual_render, style="Primary.TButton").pack(
+            side="left", fill="x", expand=True, padx=(0, 4)
+        )
+        ttk.Button(actions, text="A 미리보기", command=lambda: self.set_preview_slot("A")).pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Button(actions, text="B 미리보기", command=lambda: self.set_preview_slot("B")).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        status_box = ttk.LabelFrame(left, text="A/B 진행 상태")
+        status_box.pack(fill="x", pady=6)
+        ttk.Label(status_box, textvariable=self.dual_status_a).pack(anchor="w", padx=10, pady=(8, 2))
+        ttk.Label(status_box, textvariable=self.dual_status_b).pack(anchor="w", padx=10, pady=(2, 8))
+        self.p_dual = ttk.Progressbar(status_box, mode="determinate", maximum=2)
+        self.p_dual.pack(fill="x", padx=10, pady=(0, 10))
+
+        log_box = ttk.LabelFrame(left, text="듀얼 제작 로그")
+        log_box.pack(fill="both", expand=True, pady=6)
+        self.dual_log = tk.Text(
+            log_box,
+            height=7,
+            bg="#ffffff",
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground="#dbeafe",
+            relief="flat",
+            wrap="word",
+            padx=10,
+            pady=8,
+        )
+        self.dual_log.pack(fill="both", expand=True, padx=6, pady=6)
+
+        pv = ttk.LabelFrame(right, text="A/B 미리보기")
+        pv.pack(fill="y", expand=False)
+        self.dual_preview_canvas = tk.Canvas(pv, width=280, height=498, bg="#edf3fb", highlightthickness=1, highlightbackground=BORDER)
+        self.dual_preview_canvas.pack(padx=10, pady=10)
+        ttk.Label(pv, textvariable=self.preview_summary, style="Muted.TLabel", wraplength=280, justify="center").pack(
+            fill="x", padx=10, pady=(0, 10)
+        )
+
+    def _dual_slot_ui(self, parent, title, audio, image, subtitle, output, name, status, slot):
+        box = ttk.LabelFrame(parent, text=title)
+        box.pack(side="left", fill="both", expand=True, padx=(0, 6) if slot == "A" else (6, 0), pady=6)
+        self._pathrow(box, "음원", audio, lambda v=audio: self.pick_audio_var(v), True)
+        self._pathrow(box, "이미지", image, lambda v=image: self.pick_image_var(v), True)
+        self._pathrow(box, "자막 SRT", subtitle, lambda v=subtitle: self.pick_subtitle_var(v), True)
+        self._pathrow(box, "출력 폴더", output, lambda v=output: self.pick_directory_var(v))
+
+        row = ttk.Frame(box)
+        row.pack(fill="x", pady=4)
+        ttk.Label(row, text="출력 파일명", width=12).pack(side="left")
+        ttk.Entry(row, textvariable=name).pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(row, text=f"{slot} 미리보기", command=lambda s=slot: self.set_preview_slot(s), width=11).pack(side="left")
+        ttk.Label(box, textvariable=status, style="Muted.TLabel").pack(anchor="w", padx=8, pady=(2, 6))
 
     def _batch_ui(self):
         b = ttk.Frame(self.batch)
@@ -494,10 +604,10 @@ class App(TkinterDnD.Tk):
         self.log = tk.Text(
             lf,
             height=9,
-            bg="#0f1724",
-            fg="#eef3ff",
-            insertbackground="#ffffff",
-            selectbackground="#294b6d",
+            bg="#ffffff",
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground="#dbeafe",
             relief="flat",
             wrap="word",
             padx=10,
@@ -550,6 +660,11 @@ class App(TkinterDnD.Tk):
         for var in (
             self.image,
             self.subtitle,
+            self.dual_image_a,
+            self.dual_subtitle_a,
+            self.dual_image_b,
+            self.dual_subtitle_b,
+            self.preview_slot,
             self.motion,
             self.motion_intensity,
             self.transition_interval,
@@ -565,14 +680,36 @@ class App(TkinterDnD.Tk):
     def _schedule_preview_refresh(self):
         self._preview_motion_code = self._motion_code(for_preview=True)
         if hasattr(self, "preview_summary"):
+            slot = self._preview_slot_label()
             self.preview_summary.set(
-                f"{self.motion.get()} · {self.motion_intensity.get()} · {self.transition_interval.get()}초 · "
+                f"{slot} · {self.motion.get()} · {self.motion_intensity.get()} · {self.transition_interval.get()}초 · "
                 f"{self.subtitle_position.get()} / {self.subtitle_size.get()} / {self.subtitle_style.get()}"
             )
         self.preview_started_at = time.perf_counter()
 
+    def set_preview_slot(self, slot):
+        self.preview_slot.set(slot)
+        self._schedule_preview_refresh()
+
+    def _preview_slot_label(self):
+        return {"single": "단일", "A": "A세트", "B": "B세트"}.get(self.preview_slot.get(), "단일")
+
+    def _current_preview_image_path(self):
+        if self.preview_slot.get() == "A":
+            return self.dual_image_a.get()
+        if self.preview_slot.get() == "B":
+            return self.dual_image_b.get()
+        return self.image.get()
+
+    def _current_preview_subtitle_path(self):
+        if self.preview_slot.get() == "A":
+            return self.dual_subtitle_a.get()
+        if self.preview_slot.get() == "B":
+            return self.dual_subtitle_b.get()
+        return self.subtitle.get()
+
     def _load_preview_image(self):
-        path = self.image.get()
+        path = self._current_preview_image_path()
         if path == self._preview_source_path:
             return self._preview_source_image
         self._preview_source_path = path
@@ -586,11 +723,13 @@ class App(TkinterDnD.Tk):
 
     def _animate_visual_preview(self):
         if self.preview_canvas is not None:
-            self._draw_visual_preview()
+            self._draw_visual_preview(self.preview_canvas, "preview_photo")
+        if self.dual_preview_canvas is not None:
+            self._draw_visual_preview(self.dual_preview_canvas, "dual_preview_photo")
         self.preview_after_id = self.after(80, self._animate_visual_preview)
 
-    def _draw_visual_preview(self):
-        c = self.preview_canvas
+    def _draw_visual_preview(self, canvas=None, photo_attr="preview_photo"):
+        c = canvas or self.preview_canvas
         c.delete("all")
         w = max(220, c.winfo_width() or 280)
         h = max(390, c.winfo_height() or 498)
@@ -601,8 +740,9 @@ class App(TkinterDnD.Tk):
             self._draw_preview_placeholder(c, w, h, elapsed)
         else:
             frame = self._preview_frame(img, w, h, elapsed)
-            self.preview_photo = ImageTk.PhotoImage(frame)
-            c.create_image(0, 0, anchor="nw", image=self.preview_photo)
+            photo = ImageTk.PhotoImage(frame)
+            setattr(self, photo_attr, photo)
+            c.create_image(0, 0, anchor="nw", image=photo)
 
         self._draw_overlay_badges(c, w)
         self._draw_caption_preview(c, w, h)
@@ -610,17 +750,26 @@ class App(TkinterDnD.Tk):
     def _draw_preview_placeholder(self, c, w, h, elapsed):
         for i in range(18):
             t = i / 17
-            r = int(13 + 20 * t)
-            g = int(22 + 28 * t)
-            b = int(38 + 48 * t)
+            r = int(238 + 10 * t)
+            g = int(243 + 8 * t)
+            b = int(250 + 3 * t)
             c.create_rectangle(0, h * t, w, h * (t + 1 / 17), fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
-        cx = w / 2 + math.sin(elapsed * 0.7) * 12
-        cy = h / 2 + math.cos(elapsed * 0.5) * 18
-        c.create_oval(cx - 70, cy - 70, cx + 70, cy + 70, outline="#243553", width=2)
+        drift = 0 if self._preview_motion_code == "off" else 1
+        cx = w / 2 + math.sin(elapsed * 0.7) * 12 * drift
+        cy = h / 2 + math.cos(elapsed * 0.5) * 18 * drift
+        c.create_oval(cx - 70, cy - 70, cx + 70, cy + 70, outline="#cad6e8", width=2)
         c.create_text(w / 2, h / 2, text="이미지 선택 대기", fill=MUTED, font=("Malgun Gothic", 13, "bold"))
 
     def _preview_frame(self, img, w, h, elapsed):
         code = self._preview_motion_code
+        if code == "off":
+            cover = max(w / img.width, h / img.height)
+            rw = max(w, int(img.width * cover))
+            rh = max(h, int(img.height * cover))
+            resized = img.resize((rw, rh), Image.LANCZOS)
+            left = max(0, (rw - w) // 2)
+            top = max(0, (rh - h) // 2)
+            return resized.crop((left, top, left + w, top + h))
         period = max(3, int(self.transition_interval.get() or 5))
         p = (elapsed % period) / period
         eased = 0.5 - 0.5 * math.cos(2 * math.pi * p)
@@ -716,7 +865,7 @@ class App(TkinterDnD.Tk):
     def _draw_overlay_badges(self, c, w):
         label = self.motion.get()
         subtitle = f"{self.subtitle_position.get()} · {self.subtitle_size.get()} · {self.subtitle_style.get()}"
-        self._pill(c, 12, 12, f"ANIM {label}", ACCENT_2)
+        self._pill(c, 12, 12, f"{self._preview_slot_label()} · ANIM {label}", ACCENT_2)
         self._pill(c, 12, 42, f"CAPTION {subtitle}", "#1f7a9d")
 
     def _pill(self, c, x, y, text, fill):
@@ -762,7 +911,7 @@ class App(TkinterDnD.Tk):
         c.create_text(x, y, text=text, fill=fill, font=font, width=text_width, justify="center", anchor=anchor)
 
     def _subtitle_preview_text(self):
-        path = self.subtitle.get()
+        path = self._current_preview_subtitle_path()
         if path and Path(path).exists():
             for enc in ("utf-8-sig", "utf-8", "cp949"):
                 try:
@@ -795,7 +944,7 @@ class App(TkinterDnD.Tk):
             if for_preview:
                 return random.choice(FULL_RANDOM_CODES)
             return random.choice(FULL_RANDOM_CODES)
-        return code if code in FULL_RANDOM_CODES else "slow_zoom_in"
+        return code if code in FULL_RANDOM_CODES + ["off"] else "slow_zoom_in"
 
     def _render_options(self):
         return {
@@ -811,22 +960,45 @@ class App(TkinterDnD.Tk):
     def pick_audio(self):
         p = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.m4a *.flac *.aac *.ogg *.opus")])
         if p:
+            self.preview_slot.set("single")
             self.audio.set(p)
 
     def pick_image(self):
         p = filedialog.askopenfilename(filetypes=[("Image", "*.jpg *.jpeg *.png *.webp *.bmp")])
         if p:
+            self.preview_slot.set("single")
             self.image.set(p)
 
     def pick_subtitle(self):
         p = filedialog.askopenfilename(filetypes=[("Subtitle", "*.srt"), ("All", "*.*")])
         if p:
+            self.preview_slot.set("single")
             self.subtitle.set(p)
 
     def pick_output(self):
         p = filedialog.askdirectory()
         if p:
             self.output_dir.set(p)
+
+    def pick_audio_var(self, var):
+        p = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.m4a *.flac *.aac *.ogg *.opus")])
+        if p:
+            var.set(p)
+
+    def pick_image_var(self, var):
+        p = filedialog.askopenfilename(filetypes=[("Image", "*.jpg *.jpeg *.png *.webp *.bmp")])
+        if p:
+            var.set(p)
+
+    def pick_subtitle_var(self, var):
+        p = filedialog.askopenfilename(filetypes=[("Subtitle", "*.srt"), ("All", "*.*")])
+        if p:
+            var.set(p)
+
+    def pick_directory_var(self, var):
+        p = filedialog.askdirectory()
+        if p:
+            var.set(p)
 
     def pick_batch_input(self):
         p = filedialog.askdirectory()
@@ -878,15 +1050,15 @@ class App(TkinterDnD.Tk):
         for x in range(min(w, n)):
             idx = int(x * n / w)
             amp = vals[idx] * (h * 0.42)
-            c.create_line(x, mid - amp, x, mid + amp, fill="#7f8ba8")
+            c.create_line(x, mid - amp, x, mid + amp, fill="#94a3b8")
         colors = [DANGER, WARNING, ACCENT]
-        fills = ["#351926", "#3a3218", "#153244"]
+        fills = ["#ffe4ec", "#fff3c4", "#dbeafe"]
         for i, r in enumerate(res):
             x1 = r.start / total * w if total else 0
             x2 = r.end / total * w if total else 0
             c.create_rectangle(x1, 8, x2, h - 8, outline=colors[i], fill=fills[i], stipple="gray25", width=2)
             c.create_rectangle(x1 + 4, 12, x1 + 64, 34, fill=colors[i], outline="")
-            c.create_text(x1 + 10, 23, text=f"TOP{i + 1}", anchor="w", fill="#07111f", font=("Malgun Gothic", 9, "bold"))
+            c.create_text(x1 + 10, 23, text=f"TOP{i + 1}", anchor="w", fill="#ffffff", font=("Malgun Gothic", 9, "bold"))
 
     def preview(self):
         if not self.candidates:
@@ -962,6 +1134,136 @@ class App(TkinterDnD.Tk):
             self.after(0, lambda: (self.p1.stop(), self.status.set("완료"), messagebox.showinfo("완료", str(out))))
         except Exception as e:
             self.after(0, lambda: (self.p1.stop(), self.status.set("실패"), messagebox.showerror("오류", str(e))))
+
+    def _safe_filename(self, name, fallback):
+        raw = (name or fallback or "shorts").strip()
+        safe = "".join(ch if ch not in '<>:"/\\|?*' else "_" for ch in raw)
+        safe = safe.strip(" .")
+        return safe or "shorts"
+
+    def _unique_output_path(self, folder, filename):
+        out = Path(folder) / filename
+        if out.suffix.lower() != ".mp4":
+            out = out.with_suffix(".mp4")
+        candidate = out
+        n = 2
+        while candidate.exists():
+            candidate = out.with_name(f"{out.stem}_{n}{out.suffix}")
+            n += 1
+        return candidate
+
+    def _dual_slots(self):
+        return [
+            {
+                "label": "A세트",
+                "slot": "A",
+                "audio": self.dual_audio_a.get(),
+                "image": self.dual_image_a.get(),
+                "subtitle": self.dual_subtitle_a.get(),
+                "output": self.dual_output_a.get(),
+                "name": self.dual_name_a.get(),
+                "status": self.dual_status_a,
+            },
+            {
+                "label": "B세트",
+                "slot": "B",
+                "audio": self.dual_audio_b.get(),
+                "image": self.dual_image_b.get(),
+                "subtitle": self.dual_subtitle_b.get(),
+                "output": self.dual_output_b.get(),
+                "name": self.dual_name_b.get(),
+                "status": self.dual_status_b,
+            },
+        ]
+
+    def start_dual_render(self):
+        slots = self._dual_slots()
+        missing = []
+        for item in slots:
+            if not Path(item["audio"]).exists():
+                missing.append(f"{item['label']} 음원")
+            if not Path(item["image"]).exists():
+                missing.append(f"{item['label']} 이미지")
+            if not item["output"]:
+                missing.append(f"{item['label']} 출력 폴더")
+        if missing:
+            messagebox.showwarning("확인", "필수 입력을 확인하세요.\n" + "\n".join(missing))
+            return
+
+        self.p_dual["value"] = 0
+        self.dual_status_a.set("A세트 대기")
+        self.dual_status_b.set("B세트 대기")
+        self.status.set("숏츠 2개 제작 중")
+        self._dual_log("듀얼 제작 시작")
+        threading.Thread(target=self._dual_worker, args=(slots,), daemon=True).start()
+
+    def _dual_worker(self, slots):
+        done = 0
+        for item in slots:
+            try:
+                self.after(0, lambda i=item: (i["status"].set(f"{i['label']} 분석 중"), self._dual_log(f"{i['label']} 분석 중")))
+                out = self._render_dual_slot(item)
+                done += 1
+                self.after(
+                    0,
+                    lambda i=item, d=done, p=out: (
+                        i["status"].set(f"{i['label']} 완료: {Path(p).name}"),
+                        self.p_dual.configure(value=d),
+                        self._dual_log(f"{i['label']} 완료: {p}"),
+                    ),
+                )
+            except Exception as e:
+                self.after(
+                    0,
+                    lambda i=item, err=str(e): (
+                        i["status"].set(f"{i['label']} 실패"),
+                        self._dual_log(f"{i['label']} 실패: {err}"),
+                    ),
+                )
+        self.after(0, lambda: self.status.set("숏츠 2개 제작 완료"))
+
+    def _render_dual_slot(self, item):
+        audio = item["audio"]
+        image = item["image"]
+        outdir = Path(item["output"])
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        res = analyze_top_highlights(audio, self.duration.get(), 1)
+        if not res:
+            raise RuntimeError("하이라이트를 찾지 못했습니다.")
+        candidate = res[0]
+        stem = self._safe_filename(item["name"], f"{Path(audio).stem}_{item['slot']}_SHORT")
+        output = self._unique_output_path(outdir, f"{stem}.mp4")
+
+        if self.auto_image.get():
+            prepared = outdir / f"{stem}_{item['slot']}_VERTICAL.jpg"
+            prepare_vertical_image(image, str(prepared), self.mode.get())
+            image = str(prepared)
+
+        subtitle = item["subtitle"] if item["subtitle"] and Path(item["subtitle"]).exists() else ""
+        render_short(
+            audio,
+            image,
+            str(output),
+            candidate.start,
+            candidate.duration,
+            self.mode.get(),
+            self.zoom.get(),
+            self.fade.get(),
+            use_nvenc=self.use_nvenc.get(),
+            motion_pattern=self._motion_code(),
+            subtitle_path=subtitle,
+            **self._render_options(),
+        )
+        if self.auto_meta.get():
+            md = make_metadata(Path(audio).stem, self.channel_name.get(), self.meta_template.get())
+            save_metadata_txt(outdir, f"{output.stem}_{item['slot']}", md)
+        return str(output)
+
+    def _dual_log(self, message):
+        if hasattr(self, "dual_log"):
+            self.dual_log.insert("end", message + "\n")
+            self.dual_log.see("end")
 
     def scan_batch(self):
         f = self.batch_input.get()
@@ -1073,6 +1375,16 @@ class App(TkinterDnD.Tk):
             "skip_existing": self.skip_existing.get(),
             "output_dir": self.output_dir.get(),
             "batch_output": self.batch_output.get(),
+            "dual_audio_a": self.dual_audio_a.get(),
+            "dual_image_a": self.dual_image_a.get(),
+            "dual_subtitle_a": self.dual_subtitle_a.get(),
+            "dual_output_a": self.dual_output_a.get(),
+            "dual_name_a": self.dual_name_a.get(),
+            "dual_audio_b": self.dual_audio_b.get(),
+            "dual_image_b": self.dual_image_b.get(),
+            "dual_subtitle_b": self.dual_subtitle_b.get(),
+            "dual_output_b": self.dual_output_b.get(),
+            "dual_name_b": self.dual_name_b.get(),
             "channel_name": self.channel_name.get(),
             "meta_template": self.meta_template.get(),
             "auto_meta": self.auto_meta.get(),
