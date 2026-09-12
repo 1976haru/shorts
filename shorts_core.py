@@ -230,6 +230,7 @@ def analyze_top_highlights(audio_path, target_duration=45.0, top_n=3):
 
 MOTION_PATTERNS = [
     "off",
+    "emotional_random",
     "slow_zoom_in",
     "slow_zoom_out",
     "pan_left_to_right",
@@ -396,6 +397,13 @@ def _motion_expressions(motion_pattern, frames, fps, zoom_pct, motion_intensity,
     center_x = "iw/2-(iw/zoom/2)"
     center_y = "ih/2-(ih/zoom/2)"
 
+    if motion_pattern == "emotional_random":
+        segment = max(30.0, float(transition_interval) * float(fps))
+        z_limit = max(zmax, 1.035 + 0.025 * strength)
+        z = f"min(1.0+({z_limit - 1:.8f})*(0.38+0.62*(0.5+0.5*sin(2*PI*on/{segment:.3f})))" f"{beat},{z_limit:.5f})"
+        x = f"(iw-iw/zoom)*(0.5+0.24*sin(2*PI*on/({segment:.3f}*2)))"
+        y = f"(ih-ih/zoom)*(0.5+0.16*cos(2*PI*on/{segment:.3f}))"
+        return z, x, y, ""
     if motion_pattern == "slow_zoom_out":
         z = f"max({zmax:.5f}-({zmax - 1:.8f}*on/{frame_span}){beat},1.0)"
         return z, center_x, center_y, ""
@@ -576,6 +584,51 @@ def render_short(
     cmd += ["-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-movflags", "+faststart", "-shortest", output_path]
     _run(cmd)
     return output_path
+
+
+def save_video_thumbnail(video_path, out_path=None, at_sec=0.5):
+    video = Path(video_path)
+    if out_path is None:
+        out_path = video.with_name(f"{video.stem}_thumb.jpg")
+    out_path = Path(out_path)
+    positions = []
+    for pos in (at_sec, 0.35, 0.0):
+        pos = max(0.0, float(pos))
+        if pos not in positions:
+            positions.append(pos)
+
+    last_error = None
+    for pos in positions:
+        try:
+            _run(
+                [
+                    ffmpeg_path(),
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    f"{pos:.3f}",
+                    "-i",
+                    str(video),
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    "-pix_fmt",
+                    "yuvj420p",
+                    str(out_path),
+                ]
+            )
+            if out_path.exists() and out_path.stat().st_size > 0:
+                return str(out_path)
+        except Exception as e:
+            last_error = e
+        if out_path.exists():
+            out_path.unlink(missing_ok=True)
+    if last_error:
+        raise RuntimeError(f"Thumbnail save failed: {last_error}")
+    raise RuntimeError("Thumbnail save failed: no frame was written")
 
 
 def _stem(p):

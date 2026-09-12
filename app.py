@@ -7,6 +7,7 @@ import random
 import tempfile
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import pygame
@@ -17,7 +18,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from shorts_core import *
 
-APP_VERSION = "0.5"
+APP_VERSION = "0.6"
 SETTINGS_FILE = Path(__file__).with_name("settings.json")
 
 BG = "#f4f6fb"
@@ -148,8 +149,10 @@ class App(TkinterDnD.Tk):
         self.beat_reactivity = tk.StringVar(value="끔")
         self.overlay_effect = tk.StringVar(value="없음")
         self.subtitle_position = tk.StringVar(value="하단 안전영역")
-        self.subtitle_size = tk.StringVar(value="보통")
-        self.subtitle_style = tk.StringVar(value="감성형")
+        self.subtitle_size = tk.StringVar(value="작게")
+        self.subtitle_style = tk.StringVar(value="뮤직형")
+        self.export_thumbnail = tk.BooleanVar(value=False)
+        self.zip_after_dual = tk.BooleanVar(value=False)
         self.count_per_song = tk.IntVar(value=1)
         self.use_nvenc = tk.BooleanVar(value=False)
         self.skip_existing = tk.BooleanVar(value=True)
@@ -173,6 +176,11 @@ class App(TkinterDnD.Tk):
         self.dual_name_b = tk.StringVar()
         self.dual_status_a = tk.StringVar(value="A세트 대기")
         self.dual_status_b = tk.StringVar(value="B세트 대기")
+        self.dual_candidate_var_a = tk.IntVar(value=0)
+        self.dual_candidate_var_b = tk.IntVar(value=0)
+        self.dual_candidate_texts_a = [tk.StringVar(value=f"A 후보 {i + 1}: 분석 대기") for i in range(3)]
+        self.dual_candidate_texts_b = [tk.StringVar(value=f"B 후보 {i + 1}: 분석 대기") for i in range(3)]
+        self.last_dual_outputs_text = tk.StringVar(value="아직 듀얼 제작 결과가 없습니다.")
         self.preview_slot = tk.StringVar(value="single")
         self.channel_name = tk.StringVar(value="My Music Channel")
         self.meta_template = tk.StringVar(value="감성형")
@@ -180,6 +188,7 @@ class App(TkinterDnD.Tk):
         self.auto_image = tk.BooleanVar(value=True)
 
         self.candidates = []
+        self.dual_candidates = {"A": [], "B": []}
         self.batch_pairs = []
         self.cancel_requested = False
         self.preview_file = None
@@ -341,7 +350,7 @@ class App(TkinterDnD.Tk):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=18, pady=(16, 5))
         ttk.Label(top, text="ShortsMaker Studio", style="Title.TLabel").pack(side="left")
-        ttk.Label(top, text="v0.5", style="Version.TLabel").pack(side="left", padx=8, pady=(9, 0))
+        ttk.Label(top, text="v0.6", style="Version.TLabel").pack(side="left", padx=8, pady=(9, 0))
         ttk.Label(
             self,
             text="제작 → 자막 → 메타데이터 → ZIP 패키지까지 한 번에",
@@ -378,8 +387,10 @@ class App(TkinterDnD.Tk):
         f = ttk.LabelFrame(parent, text="공통 설정")
         f.pack(fill="x", padx=10, pady=8)
 
-        r = ttk.Frame(f)
-        r.pack(fill="x", padx=10, pady=(8, 4))
+        video = ttk.LabelFrame(f, text="영상")
+        video.pack(fill="x", padx=10, pady=(8, 4))
+        r = ttk.Frame(video)
+        r.pack(fill="x", padx=8, pady=6)
         ttk.Label(r, text="길이", width=8).pack(side="left")
         for v in (30, 45, 60):
             ttk.Radiobutton(r, text=f"{v}초", variable=self.duration, value=v).pack(side="left", padx=3)
@@ -393,28 +404,33 @@ class App(TkinterDnD.Tk):
         ttk.Checkbutton(r, text="NVENC", variable=self.use_nvenc).pack(side="left", padx=6)
         ttk.Checkbutton(r, text="기존 파일 건너뛰기", variable=self.skip_existing).pack(side="left", padx=6)
 
-        r2 = ttk.Frame(f)
-        r2.pack(fill="x", padx=10, pady=4)
+        motion = ttk.LabelFrame(f, text="모션")
+        motion.pack(fill="x", padx=10, pady=4)
+        r2 = ttk.Frame(motion)
+        r2.pack(fill="x", padx=8, pady=6)
         self._combo(r2, "애니메이션", self.motion, [label for label, _ in MOTION_OPTIONS], 18)
         self._combo(r2, "강도", self.motion_intensity, [label for label, _ in INTENSITY_OPTIONS], 7)
         self._combo(r2, "전환 간격", self.transition_interval, [3, 5, 8, 10], 6)
         self._combo(r2, "비트 반응", self.beat_reactivity, [label for label, _ in BEAT_OPTIONS], 7)
         self._combo(r2, "오버레이", self.overlay_effect, [label for label, _ in OVERLAY_OPTIONS], 10)
 
-        r3 = ttk.Frame(f)
-        r3.pack(fill="x", padx=10, pady=4)
-        self._combo(r3, "자막 위치", self.subtitle_position, [label for label, _ in SUBTITLE_POSITION_OPTIONS], 12)
-        self._combo(r3, "자막 크기", self.subtitle_size, [label for label, _ in SUBTITLE_SIZE_OPTIONS], 8)
-        self._combo(r3, "자막 스타일", self.subtitle_style, [label for label, _ in SUBTITLE_STYLE_OPTIONS], 9)
-
-        r4 = ttk.Frame(f)
-        r4.pack(fill="x", padx=10, pady=(4, 8))
+        r4 = ttk.Frame(motion)
+        r4.pack(fill="x", padx=8, pady=(0, 6))
         ttk.Label(r4, text="Zoom", width=8).pack(side="left")
         ttk.Scale(r4, from_=0, to=12, variable=self.zoom).pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Label(r4, textvariable=self.zoom, width=5, foreground=ACCENT).pack(side="left")
         ttk.Label(r4, text="Fade", width=7).pack(side="left", padx=(16, 0))
         ttk.Scale(r4, from_=0, to=2, variable=self.fade).pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Label(r4, textvariable=self.fade, width=5, foreground=ACCENT).pack(side="left")
+
+        caption = ttk.LabelFrame(f, text="자막")
+        caption.pack(fill="x", padx=10, pady=(4, 8))
+        r3 = ttk.Frame(caption)
+        r3.pack(fill="x", padx=8, pady=6)
+        self._combo(r3, "자막 위치", self.subtitle_position, [label for label, _ in SUBTITLE_POSITION_OPTIONS], 12)
+        self._combo(r3, "자막 크기", self.subtitle_size, [label for label, _ in SUBTITLE_SIZE_OPTIONS], 8)
+        self._combo(r3, "자막 스타일", self.subtitle_style, [label for label, _ in SUBTITLE_STYLE_OPTIONS], 9)
+        ttk.Label(r3, text="기본 안전영역: 하단 220~300px").pack(side="left", padx=(4, 0))
 
     def _combo(self, parent, label, variable, values, width):
         ttk.Label(parent, text=label).pack(side="left", padx=(0, 4))
@@ -529,6 +545,11 @@ class App(TkinterDnD.Tk):
         ttk.Button(actions, text="A 미리보기", command=lambda: self.set_preview_slot("A")).pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(actions, text="B 미리보기", command=lambda: self.set_preview_slot("B")).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
+        opts = ttk.Frame(left)
+        opts.pack(fill="x", pady=(0, 6))
+        ttk.Checkbutton(opts, text="썸네일 자동 저장", variable=self.export_thumbnail).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(opts, text="완료 후 ZIP 패키지", variable=self.zip_after_dual).pack(side="left")
+
         status_box = ttk.LabelFrame(left, text="A/B 진행 상태")
         status_box.pack(fill="x", pady=6)
         ttk.Label(status_box, textvariable=self.dual_status_a).pack(anchor="w", padx=10, pady=(8, 2))
@@ -574,6 +595,14 @@ class App(TkinterDnD.Tk):
         ttk.Entry(row, textvariable=name).pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(row, text=f"{slot} 미리보기", command=lambda s=slot: self.set_preview_slot(s), width=11).pack(side="left")
         ttk.Label(box, textvariable=status, style="Muted.TLabel").pack(anchor="w", padx=8, pady=(2, 6))
+        ttk.Button(box, text=f"{slot} TOP3 분석", command=lambda s=slot: self.analyze_dual_slot(s)).pack(fill="x", padx=8, pady=(0, 4))
+        cand_var = self.dual_candidate_var_a if slot == "A" else self.dual_candidate_var_b
+        cand_texts = self.dual_candidate_texts_a if slot == "A" else self.dual_candidate_texts_b
+        for i in range(3):
+            rr = ttk.Frame(box)
+            rr.pack(fill="x", padx=8, pady=1)
+            ttk.Radiobutton(rr, variable=cand_var, value=i).pack(side="left")
+            ttk.Label(rr, textvariable=cand_texts[i], style="Muted.TLabel").pack(side="left")
 
     def _batch_ui(self):
         b = ttk.Frame(self.batch)
@@ -639,7 +668,11 @@ class App(TkinterDnD.Tk):
             side="left", fill="x", expand=True, padx=(4, 0)
         )
 
-        info = ttk.LabelFrame(b, text="v0.5 사용 흐름")
+        dual = ttk.LabelFrame(b, text="오늘 만든 숏츠 2개")
+        dual.pack(fill="x", pady=8)
+        ttk.Label(dual, textvariable=self.last_dual_outputs_text, justify="left", wraplength=900).pack(anchor="w", padx=10, pady=10)
+
+        info = ttk.LabelFrame(b, text="v0.6 사용 흐름")
         info.pack(fill="both", expand=True, pady=8)
         text = (
             "1. 음원 + 이미지 선택\n"
@@ -745,6 +778,7 @@ class App(TkinterDnD.Tk):
             c.create_image(0, 0, anchor="nw", image=photo)
 
         self._draw_overlay_badges(c, w)
+        self._draw_safe_zone_guides(c, w, h)
         self._draw_caption_preview(c, w, h)
 
     def _draw_preview_placeholder(self, c, w, h, elapsed):
@@ -786,7 +820,11 @@ class App(TkinterDnD.Tk):
         nx = ny = 0.5
         angle = 0.0
 
-        if code == "slow_zoom_out":
+        if code == "emotional_random":
+            zoom = 1.0 + (base_zoom - 1.0) * (0.35 + 0.65 * eased) + beat
+            nx = 0.5 + 0.24 * math.sin(2 * math.pi * p)
+            ny = 0.5 + 0.16 * math.cos(2 * math.pi * p)
+        elif code == "slow_zoom_out":
             zoom = base_zoom - (base_zoom - 1.0) * eased + beat
         elif code == "pan_left_to_right":
             zoom, nx = pan_zoom + beat, eased
@@ -868,6 +906,14 @@ class App(TkinterDnD.Tk):
         self._pill(c, 12, 12, f"{self._preview_slot_label()} · ANIM {label}", ACCENT_2)
         self._pill(c, 12, 42, f"CAPTION {subtitle}", "#1f7a9d")
 
+    def _draw_safe_zone_guides(self, c, w, h):
+        top = int(h * 0.08)
+        bottom = int(h * 0.90)
+        caption_top = int(h * 0.76)
+        caption_bottom = int(h * 0.91)
+        c.create_rectangle(10, top, w - 10, bottom, outline="#b6c5da", dash=(4, 4))
+        c.create_rectangle(18, caption_top, w - 18, caption_bottom, outline="#2563eb", dash=(3, 3))
+
     def _pill(self, c, x, y, text, fill):
         font = ("Malgun Gothic", 9, "bold")
         tid = c.create_text(x + 10, y + 9, text=text, anchor="w", fill="#ffffff", font=font)
@@ -937,9 +983,7 @@ class App(TkinterDnD.Tk):
         label = self.motion.get()
         code = MOTION_LABEL_TO_CODE.get(label, label)
         if code == "sentimental_random":
-            if for_preview:
-                return random.choice(SENTIMENTAL_RANDOM_CODES)
-            return random.choice(SENTIMENTAL_RANDOM_CODES)
+            return "emotional_random"
         if code == "random":
             if for_preview:
                 return random.choice(FULL_RANDOM_CODES)
@@ -1009,6 +1053,41 @@ class App(TkinterDnD.Tk):
         p = filedialog.askdirectory()
         if p:
             self.batch_output.set(p)
+
+    def analyze_dual_slot(self, slot):
+        audio = self.dual_audio_a.get() if slot == "A" else self.dual_audio_b.get()
+        status = self.dual_status_a if slot == "A" else self.dual_status_b
+        if not Path(audio).exists():
+            messagebox.showwarning("확인", f"{slot}세트 음원을 선택하세요.")
+            return
+        status.set(f"{slot}세트 TOP3 분석 중")
+        self._dual_log(f"{slot}세트 TOP3 분석 중")
+        threading.Thread(target=self._dual_analyze_worker, args=(slot, audio), daemon=True).start()
+
+    def _dual_analyze_worker(self, slot, audio):
+        try:
+            res = analyze_top_highlights(audio, self.duration.get(), 3)
+            self.after(0, lambda: self._dual_analysis_done(slot, res))
+        except Exception as e:
+            self.after(0, lambda err=str(e): self._dual_analysis_failed(slot, err))
+
+    def _dual_analysis_done(self, slot, res):
+        self.dual_candidates[slot] = res
+        status = self.dual_status_a if slot == "A" else self.dual_status_b
+        texts = self.dual_candidate_texts_a if slot == "A" else self.dual_candidate_texts_b
+        for i in range(3):
+            if i < len(res):
+                x = res[i]
+                texts[i].set(f"{slot} 후보 {i + 1}: {fmt(x.start)} ~ {fmt(x.end)} | 점수 {x.score:.3f} | BPM {x.bpm:.1f}")
+            else:
+                texts[i].set(f"{slot} 후보 {i + 1}: 없음")
+        status.set(f"{slot}세트 TOP3 분석 완료")
+        self._dual_log(f"{slot}세트 TOP3 분석 완료")
+
+    def _dual_analysis_failed(self, slot, error):
+        status = self.dual_status_a if slot == "A" else self.dual_status_b
+        status.set(f"{slot}세트 분석 실패")
+        self._dual_log(f"{slot}세트 분석 실패: {error}")
 
     def analyze(self):
         if not Path(self.audio.get()).exists():
@@ -1128,6 +1207,8 @@ class App(TkinterDnD.Tk):
                 subtitle_path=self.subtitle.get(),
                 **self._render_options(),
             )
+            if self.export_thumbnail.get():
+                save_video_thumbnail(out)
             if self.auto_meta.get():
                 md = make_metadata(stem, self.channel_name.get(), self.meta_template.get())
                 save_metadata_txt(outdir, f"{stem}_TOP{idx}", md)
@@ -1199,14 +1280,16 @@ class App(TkinterDnD.Tk):
 
     def _dual_worker(self, slots):
         done = 0
+        generated = []
         for item in slots:
             try:
-                self.after(0, lambda i=item: (i["status"].set(f"{i['label']} 분석 중"), self._dual_log(f"{i['label']} 분석 중")))
-                out = self._render_dual_slot(item)
+                self.after(0, lambda i=item: (i["status"].set(f"{i['label']} 분석/렌더 중"), self._dual_log(f"{i['label']} 분석/렌더 중")))
+                result = self._render_dual_slot(item)
+                generated.extend(result["files"])
                 done += 1
                 self.after(
                     0,
-                    lambda i=item, d=done, p=out: (
+                    lambda i=item, d=done, p=result["video"]: (
                         i["status"].set(f"{i['label']} 완료: {Path(p).name}"),
                         self.p_dual.configure(value=d),
                         self._dual_log(f"{i['label']} 완료: {p}"),
@@ -1220,7 +1303,14 @@ class App(TkinterDnD.Tk):
                         self._dual_log(f"{i['label']} 실패: {err}"),
                     ),
                 )
-        self.after(0, lambda: self.status.set("숏츠 2개 제작 완료"))
+        if generated and self.zip_after_dual.get():
+            try:
+                zip_path = self._zip_dual_outputs(generated)
+                generated.append(zip_path)
+                self.after(0, lambda z=zip_path: self._dual_log(f"ZIP 완료: {z}"))
+            except Exception as e:
+                self.after(0, lambda err=str(e): self._dual_log(f"ZIP 실패: {err}"))
+        self.after(0, lambda files=list(generated): (self._update_last_dual_outputs(files), self.status.set("숏츠 2개 제작 완료")))
 
     def _render_dual_slot(self, item):
         audio = item["audio"]
@@ -1228,10 +1318,12 @@ class App(TkinterDnD.Tk):
         outdir = Path(item["output"])
         outdir.mkdir(parents=True, exist_ok=True)
 
-        res = analyze_top_highlights(audio, self.duration.get(), 1)
+        res = self.dual_candidates.get(item["slot"]) or analyze_top_highlights(audio, self.duration.get(), 3)
         if not res:
             raise RuntimeError("하이라이트를 찾지 못했습니다.")
-        candidate = res[0]
+        selected = self.dual_candidate_var_a.get() if item["slot"] == "A" else self.dual_candidate_var_b.get()
+        selected = max(0, min(selected, len(res) - 1))
+        candidate = res[selected]
         stem = self._safe_filename(item["name"], f"{Path(audio).stem}_{item['slot']}_SHORT")
         output = self._unique_output_path(outdir, f"{stem}.mp4")
 
@@ -1241,6 +1333,7 @@ class App(TkinterDnD.Tk):
             image = str(prepared)
 
         subtitle = item["subtitle"] if item["subtitle"] and Path(item["subtitle"]).exists() else ""
+        files = []
         render_short(
             audio,
             image,
@@ -1255,15 +1348,36 @@ class App(TkinterDnD.Tk):
             subtitle_path=subtitle,
             **self._render_options(),
         )
+        files.append(str(output))
+        if self.export_thumbnail.get():
+            files.append(save_video_thumbnail(output))
         if self.auto_meta.get():
             md = make_metadata(Path(audio).stem, self.channel_name.get(), self.meta_template.get())
-            save_metadata_txt(outdir, f"{output.stem}_{item['slot']}", md)
-        return str(output)
+            files.append(save_metadata_txt(outdir, f"{output.stem}_{item['slot']}", md))
+        return {"video": str(output), "files": files}
+
+    def _zip_dual_outputs(self, files):
+        first_dir = Path(files[0]).parent
+        zip_path = first_dir / f"{time.strftime('%Y%m%d')}_shorts_pack.zip"
+        n = 2
+        while zip_path.exists():
+            zip_path = first_dir / f"{time.strftime('%Y%m%d')}_shorts_pack_{n}.zip"
+            n += 1
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for file in files:
+                p = Path(file)
+                if p.exists():
+                    z.write(p, p.name)
+        return str(zip_path)
 
     def _dual_log(self, message):
         if hasattr(self, "dual_log"):
             self.dual_log.insert("end", message + "\n")
             self.dual_log.see("end")
+
+    def _update_last_dual_outputs(self, files):
+        videos = [str(p) for p in files if str(p).lower().endswith((".mp4", ".zip"))]
+        self.last_dual_outputs_text.set("\n".join(videos) if videos else "듀얼 제작 결과가 없습니다.")
 
     def scan_batch(self):
         f = self.batch_input.get()
@@ -1324,6 +1438,8 @@ class App(TkinterDnD.Tk):
                         motion_pattern=self._motion_code(),
                         **self._render_options(),
                     )
+                    if self.export_thumbnail.get():
+                        save_video_thumbnail(out)
                     if self.auto_meta.get():
                         md = make_metadata(stem, self.channel_name.get(), self.meta_template.get())
                         save_metadata_txt(outdir, f"{stem}_TOP{j + 1}", md)
@@ -1370,6 +1486,8 @@ class App(TkinterDnD.Tk):
             "subtitle_position": self.subtitle_position.get(),
             "subtitle_size": self.subtitle_size.get(),
             "subtitle_style": self.subtitle_style.get(),
+            "export_thumbnail": self.export_thumbnail.get(),
+            "zip_after_dual": self.zip_after_dual.get(),
             "count_per_song": self.count_per_song.get(),
             "use_nvenc": self.use_nvenc.get(),
             "skip_existing": self.skip_existing.get(),
