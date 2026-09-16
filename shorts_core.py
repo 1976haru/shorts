@@ -1,20 +1,40 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
-import imageio_ffmpeg
-import librosa
 import numpy as np
 from PIL import Image, ImageFilter
 
+try:
+    import imageio_ffmpeg
+except Exception:
+    imageio_ffmpeg = None
+
+try:
+    import librosa
+except Exception:
+    librosa = None
+
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".aac", ".ogg", ".opus"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+SOCIAL_WIDTH = 1080
+SOCIAL_HEIGHT = 1920
+SOCIAL_FPS = 30
+SOCIAL_COLOR = "bt709"
+SOCIAL_RANGE = "tv"
+SOCIAL_PIX_FMT = "yuv420p"
+SOCIAL_AUDIO_RATE = 48000
+SOCIAL_AUDIO_CHANNELS = 2
+SOCIAL_AUDIO_BITRATE = "192k"
 
 
 @dataclass
@@ -28,7 +48,21 @@ class HighlightResult:
 
 
 def ffmpeg_path():
-    return imageio_ffmpeg.get_ffmpeg_exe()
+    if imageio_ffmpeg is not None:
+        try:
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            pass
+    return shutil.which("ffmpeg") or "ffmpeg"
+
+
+def ffprobe_path():
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+    ffmpeg = Path(ffmpeg_path())
+    candidate = ffmpeg.with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
+    return str(candidate) if candidate.exists() else None
 
 
 def _run(cmd):
@@ -49,6 +83,12 @@ def _run(cmd):
     return p.stdout + p.stderr
 
 
+def _require_librosa():
+    if librosa is None:
+        raise RuntimeError("librosa is required for audio analysis. Please install project requirements.")
+    return librosa
+
+
 def nvenc_available():
     try:
         p = subprocess.run(
@@ -65,6 +105,7 @@ def nvenc_available():
 
 
 def decode_mono(audio_path, sr=22050):
+    lb = _require_librosa()
     with tempfile.TemporaryDirectory(prefix="shortsmaker_") as td:
         wav = str(Path(td) / "audio.wav")
         _run(
@@ -86,7 +127,7 @@ def decode_mono(audio_path, sr=22050):
                 wav,
             ]
         )
-        y, _ = librosa.load(wav, sr=sr, mono=True)
+        y, _ = lb.load(wav, sr=sr, mono=True)
     return y, sr
 
 
@@ -130,6 +171,7 @@ def extract_preview_wav(audio_path, start, duration, out_path):
 
 
 def analyze_top_highlights(audio_path, target_duration=45.0, top_n=3):
+    lb = _require_librosa()
     target_duration = float(np.clip(target_duration, 30.0, 60.0))
     y, sr = decode_mono(audio_path, 22050)
     total = len(y) / sr
@@ -146,9 +188,9 @@ def analyze_top_highlights(audio_path, target_duration=45.0, top_n=3):
         ]
 
     hop = 512
-    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
-    onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-    spectrum = np.abs(librosa.stft(y, n_fft=2048, hop_length=hop))
+    rms = lb.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
+    onset = lb.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    spectrum = np.abs(lb.stft(y, n_fft=2048, hop_length=hop))
     flux = np.sqrt(np.maximum(0.0, np.diff(spectrum, axis=1, prepend=spectrum[:, :1]) ** 2).mean(axis=0))
 
     def norm(v):
@@ -157,11 +199,11 @@ def analyze_top_highlights(audio_path, target_duration=45.0, top_n=3):
         return np.zeros_like(v) if hi <= lo + 1e-12 else np.clip((v - lo) / (hi - lo), 0, 1)
 
     rn, on, fn = norm(rms), norm(onset), norm(flux)
-    times = librosa.frames_to_time(np.arange(len(rn)), sr=sr, hop_length=hop)
+    times = lb.frames_to_time(np.arange(len(rn)), sr=sr, hop_length=hop)
     try:
-        tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop)
+        tempo, beats = lb.beat.beat_track(y=y, sr=sr, hop_length=hop)
         bpm = float(np.atleast_1d(tempo)[0])
-        beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=hop)
+        beat_times = lb.frames_to_time(beats, sr=sr, hop_length=hop)
     except Exception:
         bpm = 0.0
         beat_times = np.array([])
@@ -476,7 +518,110 @@ def _overlay_filters(overlay_effect):
     return []
 
 
-def render_short(
+def social_video_filter(vf, fps=SOCIAL_FPS, width=SOCIAL_WIDTH, height=SOCIAL_HEIGHT):
+    fps = int(SOCIAL_FPS)
+    width = int(SOCIAL_WIDTH)
+    height = int(SOCIAL_HEIGHT)
+    final_filters = [
+        f"fps=fps={fps}:round=near",
+        f"scale={width}:{height}:flags=lanczos:in_range=auto:out_range=tv:out_color_matrix=bt709",
+        "setsar=1",
+        "format=yuv420p",
+        "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+        f"setpts=N/({fps}*TB)",
+    ]
+    return f"{vf}," + ",".join(final_filters)
+
+
+def social_audio_filter(af="anull"):
+    af = af or "anull"
+    return ",".join(
+        [
+            af,
+            f"aresample={SOCIAL_AUDIO_RATE}",
+            f"aformat=sample_rates={SOCIAL_AUDIO_RATE}:channel_layouts=stereo",
+        ]
+    )
+
+
+def social_video_encode_args(use_nvenc=False, fps=SOCIAL_FPS, nvenc_available_fn=None):
+    fps = int(SOCIAL_FPS)
+    checker = nvenc_available_fn or nvenc_available
+    use_hw = False
+    if use_nvenc:
+        try:
+            use_hw = bool(checker())
+        except Exception:
+            use_hw = False
+
+    common = [
+        "-pix_fmt",
+        SOCIAL_PIX_FMT,
+        "-profile:v",
+        "high",
+        "-level:v",
+        "4.1",
+        "-colorspace",
+        SOCIAL_COLOR,
+        "-color_primaries",
+        SOCIAL_COLOR,
+        "-color_trc",
+        SOCIAL_COLOR,
+        "-color_range",
+        SOCIAL_RANGE,
+        "-r",
+        str(fps),
+        "-fps_mode:v",
+        "cfr",
+    ]
+    if use_hw:
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p5",
+            "-cq",
+            "19",
+            "-b:v",
+            "8M",
+            "-maxrate",
+            "12M",
+            "-bufsize",
+            "16M",
+        ] + common
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "18"] + common
+
+
+def social_audio_encode_args():
+    return [
+        "-c:a",
+        "aac",
+        "-profile:a",
+        "aac_low",
+        "-b:a",
+        SOCIAL_AUDIO_BITRATE,
+        "-ar",
+        str(SOCIAL_AUDIO_RATE),
+        "-ac",
+        str(SOCIAL_AUDIO_CHANNELS),
+    ]
+
+
+def social_mp4_output_args():
+    return [
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-avoid_negative_ts",
+        "make_zero",
+        "-shortest",
+    ]
+
+
+def build_render_short_command(
     audio_path,
     image_path,
     output_path,
@@ -485,9 +630,9 @@ def render_short(
     mode="fill",
     zoom_pct=6.0,
     fade_sec=0.5,
-    fps=30,
-    width=1080,
-    height=1920,
+    fps=SOCIAL_FPS,
+    width=SOCIAL_WIDTH,
+    height=SOCIAL_HEIGHT,
     use_nvenc=False,
     motion_pattern="slow_zoom_in",
     subtitle_path="",
@@ -498,8 +643,11 @@ def render_short(
     transition_interval=5,
     beat_reactivity="off",
     overlay_effect="none",
+    nvenc_available_fn=None,
 ):
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    fps = int(SOCIAL_FPS)
+    width = int(SOCIAL_WIDTH)
+    height = int(SOCIAL_HEIGHT)
     duration = max(1.0, float(duration))
     motion_pattern = _normalize_motion(motion_pattern)
     motion_off = motion_pattern == "off"
@@ -553,7 +701,8 @@ def render_short(
     else:
         af = "anull"
 
-    vf += ",format=yuv420p"
+    vf = social_video_filter(vf, fps, width, height)
+    af = social_audio_filter(af)
 
     cmd = [
         ffmpeg_path(),
@@ -566,24 +715,426 @@ def render_short(
         "-framerate",
         str(fps),
         "-i",
-        image_path,
+        str(image_path),
         "-ss",
-        f"{start:.3f}",
+        f"{float(start):.3f}",
         "-i",
-        audio_path,
+        str(audio_path),
     ]
     if mode == "blur":
         cmd += ["-filter_complex", vf + "[v]", "-map", "[v]", "-map", "1:a:0"]
     else:
         cmd += ["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"]
-    cmd += ["-af", af, "-t", f"{duration:.3f}", "-r", str(fps)]
-    if use_nvenc and nvenc_available():
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "19", "-b:v", "0"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high", "-level", "4.1"]
-    cmd += ["-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-movflags", "+faststart", "-shortest", output_path]
+    cmd += ["-af", af, "-t", f"{duration:.3f}"]
+    cmd += social_video_encode_args(use_nvenc=use_nvenc, fps=fps, nvenc_available_fn=nvenc_available_fn)
+    cmd += social_audio_encode_args()
+    cmd += social_mp4_output_args()
+    cmd += [str(output_path)]
+    return cmd
+
+
+def render_short(
+    audio_path,
+    image_path,
+    output_path,
+    start,
+    duration,
+    mode="fill",
+    zoom_pct=6.0,
+    fade_sec=0.5,
+    fps=30,
+    width=1080,
+    height=1920,
+    use_nvenc=False,
+    motion_pattern="slow_zoom_in",
+    subtitle_path="",
+    subtitle_position="safe_bottom",
+    subtitle_size="medium",
+    subtitle_style="emotional",
+    motion_intensity="medium",
+    transition_interval=5,
+    beat_reactivity="off",
+    overlay_effect="none",
+):
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = build_render_short_command(
+        audio_path,
+        image_path,
+        output_path,
+        start,
+        duration,
+        mode,
+        zoom_pct,
+        fade_sec,
+        fps,
+        width,
+        height,
+        use_nvenc,
+        motion_pattern,
+        subtitle_path,
+        subtitle_position,
+        subtitle_size,
+        subtitle_style,
+        motion_intensity,
+        transition_interval,
+        beat_reactivity,
+        overlay_effect,
+    )
     _run(cmd)
     return output_path
+
+
+def _run_capture(cmd):
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kw,
+    )
+
+
+def _parse_rate(value):
+    if not value or value in {"0/0", "N/A"}:
+        return None
+    try:
+        return float(Fraction(str(value)))
+    except Exception:
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+
+def _near(value, target, tolerance=0.01):
+    return value is not None and abs(float(value) - float(target)) <= tolerance
+
+
+def _probe_with_ffprobe(path):
+    probe = ffprobe_path()
+    if not probe:
+        return None
+    p = _run_capture(
+        [
+            probe,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ]
+    )
+    if p.returncode != 0 or not p.stdout.strip():
+        return None
+    try:
+        return json.loads(p.stdout)
+    except Exception:
+        return None
+
+
+def _probe_with_ffmpeg(path):
+    p = _run_capture([ffmpeg_path(), "-hide_banner", "-i", str(path)])
+    text = (p.stderr or "") + "\n" + (p.stdout or "")
+    if not text.strip():
+        return None
+
+    format_name = ""
+    if "Input #0, mov,mp4,m4a,3gp,3g2,mj2" in text:
+        format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+
+    duration = None
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if m:
+        duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+    streams = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if " Video: " in line:
+            stream = {"codec_type": "video"}
+            m = re.search(r"Video:\s*([^,\s]+)", line)
+            if m:
+                stream["codec_name"] = m.group(1).lower()
+            m = re.search(r"Video:\s*[^(,\s]+(?:\s*\(([^)]*)\))?", line)
+            if m and m.group(1):
+                stream["profile"] = m.group(1)
+            m = re.search(r"(\d{2,5})x(\d{2,5})", line)
+            if m:
+                stream["width"] = int(m.group(1))
+                stream["height"] = int(m.group(2))
+            m = re.search(r",\s*([a-z0-9_]+)(?:\(([^)]*)\))?,\s*\d{2,5}x\d{2,5}", line, re.I)
+            if m:
+                stream["pix_fmt"] = m.group(1)
+                tags = [x.strip() for x in (m.group(2) or "").split(",") if x.strip()]
+                if tags:
+                    if tags[0] in {"tv", "pc"}:
+                        stream["color_range"] = tags[0]
+                        tags = tags[1:]
+                    for tag in tags:
+                        if tag == "bt709":
+                            stream["color_space"] = "bt709"
+                            stream["color_transfer"] = "bt709"
+                            stream["color_primaries"] = "bt709"
+            m = re.search(r"(\d+(?:\.\d+)?)\s*fps", line)
+            if m:
+                stream["avg_frame_rate"] = f"{m.group(1)}/1"
+                stream["r_frame_rate"] = f"{m.group(1)}/1"
+            if duration is not None:
+                stream["duration"] = str(duration)
+            streams.append(stream)
+        elif " Audio: " in line:
+            stream = {"codec_type": "audio"}
+            m = re.search(r"Audio:\s*([^,\s]+)", line)
+            if m:
+                stream["codec_name"] = m.group(1).lower()
+            m = re.search(r"Audio:\s*[^(,\s]+(?:\s*\(([^)]*)\))?", line)
+            if m and m.group(1):
+                stream["profile"] = m.group(1)
+            m = re.search(r"(\d+)\s*Hz", line)
+            if m:
+                stream["sample_rate"] = m.group(1)
+            if re.search(r"\bstereo\b", line, re.I):
+                stream["channels"] = 2
+                stream["channel_layout"] = "stereo"
+            elif re.search(r"\bmono\b", line, re.I):
+                stream["channels"] = 1
+                stream["channel_layout"] = "mono"
+            if duration is not None:
+                stream["duration"] = str(duration)
+            streams.append(stream)
+
+    return {"format": {"format_name": format_name, "duration": str(duration or "")}, "streams": streams}
+
+
+def _probe_media(path):
+    return _probe_with_ffprobe(path) or _probe_with_ffmpeg(path)
+
+
+def validate_social_video(path, min_duration=30.0, max_duration=60.0):
+    result = {
+        "compatible": False,
+        "container": "",
+        "video_codec": "",
+        "video_profile": "",
+        "video_level": None,
+        "resolution": "",
+        "aspect_ratio": "",
+        "fps": None,
+        "avg_frame_rate": "",
+        "r_frame_rate": "",
+        "fps_mode": "",
+        "pixel_format": "",
+        "color_space": "",
+        "color_transfer": "",
+        "color_primaries": "",
+        "color_range": "",
+        "field_order": "",
+        "audio_codec": "",
+        "audio_profile": "",
+        "sample_rate": None,
+        "channels": None,
+        "channel_layout": "",
+        "duration": None,
+        "issues": [],
+    }
+
+    media_path = Path(path)
+    if not media_path.exists():
+        result["issues"].append("파일이 존재하지 않습니다.")
+        return result
+
+    probe = _probe_media(media_path)
+    if not probe:
+        result["issues"].append("미디어 정보를 확인할 수 없습니다.")
+        return result
+
+    fmt = probe.get("format") or {}
+    streams = probe.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
+
+    format_name = (fmt.get("format_name") or "").lower()
+    result["container"] = "mp4" if "mp4" in format_name or "mov" in format_name else format_name
+    if result["container"] != "mp4":
+        result["issues"].append("MP4 컨테이너가 아닙니다.")
+
+    duration = fmt.get("duration") or video.get("duration") or audio.get("duration")
+    try:
+        result["duration"] = round(float(duration), 3)
+    except Exception:
+        result["duration"] = None
+    if result["duration"] is None:
+        result["issues"].append("Duration을 확인할 수 없습니다.")
+    elif not (float(min_duration) <= result["duration"] <= float(max_duration)):
+        result["issues"].append(f"Duration이 {min_duration:g}~{max_duration:g}초 범위가 아닙니다.")
+
+    if not video:
+        result["issues"].append("비디오 스트림이 없습니다.")
+    else:
+        result["video_codec"] = (video.get("codec_name") or "").lower()
+        result["video_profile"] = video.get("profile") or ""
+        result["video_level"] = video.get("level")
+        width = int(video.get("width") or 0)
+        height = int(video.get("height") or 0)
+        result["resolution"] = f"{width}x{height}" if width and height else ""
+        result["aspect_ratio"] = "9:16" if width * 16 == height * 9 and width else ""
+        result["pixel_format"] = video.get("pix_fmt") or ""
+        result["color_space"] = video.get("color_space") or ""
+        result["color_transfer"] = video.get("color_transfer") or ""
+        result["color_primaries"] = video.get("color_primaries") or ""
+        result["color_range"] = video.get("color_range") or ""
+        result["field_order"] = video.get("field_order") or ""
+        result["avg_frame_rate"] = video.get("avg_frame_rate") or ""
+        result["r_frame_rate"] = video.get("r_frame_rate") or ""
+        avg_fps = _parse_rate(result["avg_frame_rate"])
+        r_fps = _parse_rate(result["r_frame_rate"])
+        result["fps"] = int(round(avg_fps)) if _near(avg_fps, round(avg_fps or 0)) else avg_fps
+        is_cfr_30 = _near(avg_fps, SOCIAL_FPS) and (r_fps is None or _near(r_fps, SOCIAL_FPS))
+        result["fps_mode"] = "cfr" if is_cfr_30 else "unknown"
+
+        if result["video_codec"] != "h264":
+            result["issues"].append("Video codec이 H.264가 아닙니다.")
+        if width != SOCIAL_WIDTH or height != SOCIAL_HEIGHT:
+            result["issues"].append("Resolution이 1080x1920이 아닙니다.")
+        if result["aspect_ratio"] != "9:16":
+            result["issues"].append("Aspect ratio가 9:16이 아닙니다.")
+        if not is_cfr_30:
+            result["issues"].append("Frame rate가 CFR 30fps가 아닙니다.")
+        if result["pixel_format"] != SOCIAL_PIX_FMT:
+            result["issues"].append("Pixel format이 yuv420p가 아닙니다.")
+        if result["color_space"] != SOCIAL_COLOR:
+            result["issues"].append("Color space가 BT.709가 아닙니다.")
+        if result["color_transfer"] != SOCIAL_COLOR:
+            result["issues"].append("Color transfer가 BT.709가 아닙니다.")
+        if result["color_primaries"] != SOCIAL_COLOR:
+            result["issues"].append("Color primaries가 BT.709가 아닙니다.")
+        if result["color_range"] != SOCIAL_RANGE:
+            result["issues"].append("Color range가 limited/tv가 아닙니다.")
+        if result["field_order"] and result["field_order"] != "progressive":
+            result["issues"].append("Progressive 영상이 아닙니다.")
+        if result["video_profile"] and result["video_profile"].lower() != "high":
+            result["issues"].append("H.264 profile이 High가 아닙니다.")
+        if result["video_level"] not in (None, 41, "41"):
+            result["issues"].append("H.264 level이 4.1이 아닙니다.")
+
+    if not audio:
+        result["issues"].append("오디오 스트림이 없습니다.")
+    else:
+        result["audio_codec"] = (audio.get("codec_name") or "").lower()
+        result["audio_profile"] = audio.get("profile") or ""
+        try:
+            result["sample_rate"] = int(audio.get("sample_rate") or 0)
+        except Exception:
+            result["sample_rate"] = None
+        try:
+            result["channels"] = int(audio.get("channels") or 0)
+        except Exception:
+            result["channels"] = None
+        result["channel_layout"] = audio.get("channel_layout") or ""
+
+        if result["audio_codec"] != "aac":
+            result["issues"].append("Audio codec이 AAC가 아닙니다.")
+        if result["audio_profile"] and "LC" not in result["audio_profile"].upper():
+            result["issues"].append("AAC-LC 오디오가 아닙니다.")
+        if result["sample_rate"] != SOCIAL_AUDIO_RATE:
+            result["issues"].append("Audio sample rate가 48000Hz가 아닙니다.")
+        if result["channels"] != SOCIAL_AUDIO_CHANNELS:
+            result["issues"].append("Audio channel이 stereo(2ch)가 아닙니다.")
+
+    result["compatible"] = not result["issues"]
+    return result
+
+
+def _has_audio_stream(path):
+    probe = _probe_media(path)
+    if not probe:
+        return True
+    return any(s.get("codec_type") == "audio" for s in probe.get("streams") or [])
+
+
+def _is_social_mp4(path):
+    p = Path(path)
+    return p.suffix.lower() == ".mp4" and re.search(r"_SOCIAL(?:_\d+)?$", p.stem, re.I) is not None
+
+
+def _unique_existing_safe_path(path):
+    out = Path(path)
+    if not out.exists():
+        return out
+    n = 2
+    while True:
+        candidate = out.with_name(f"{out.stem}_{n}{out.suffix}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _default_social_output_path(input_path):
+    src = Path(input_path)
+    return src.with_name(f"{src.stem}_SOCIAL.mp4")
+
+
+def build_social_convert_command(input_path, output_path, use_nvenc=False, has_audio=True, nvenc_available_fn=None):
+    vf = (
+        f"scale={SOCIAL_WIDTH}:{SOCIAL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={SOCIAL_WIDTH}:{SOCIAL_HEIGHT}"
+    )
+    vf = social_video_filter(vf, SOCIAL_FPS, SOCIAL_WIDTH, SOCIAL_HEIGHT)
+
+    cmd = [ffmpeg_path(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(input_path)]
+    if not has_audio:
+        cmd += ["-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={SOCIAL_AUDIO_RATE}"]
+    cmd += ["-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0"]
+    cmd += ["-vf", vf, "-af", social_audio_filter("anull")]
+    cmd += social_video_encode_args(use_nvenc=use_nvenc, fps=SOCIAL_FPS, nvenc_available_fn=nvenc_available_fn)
+    cmd += social_audio_encode_args()
+    cmd += social_mp4_output_args()
+    cmd += [str(output_path)]
+    return cmd
+
+
+def convert_to_social_compatible(input_path, output_path=None, use_nvenc=False, overwrite=False):
+    src = Path(input_path)
+    if not src.exists():
+        raise FileNotFoundError(str(src))
+    out = Path(output_path) if output_path else _default_social_output_path(src)
+    if out.resolve() == src.resolve():
+        raise ValueError("Output path must not overwrite the original MP4.")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists() and not overwrite:
+        out = _unique_existing_safe_path(out)
+    has_audio = _has_audio_stream(src)
+    cmd = build_social_convert_command(src, out, use_nvenc=use_nvenc, has_audio=has_audio)
+    _run(cmd)
+    validation = validate_social_video(out)
+    return {"input_path": str(src), "output_path": str(out), "validation": validation}
+
+
+def batch_convert_to_social_compatible(folder, use_nvenc=False):
+    base = Path(folder)
+    results = []
+    for src in sorted(base.glob("*.mp4")):
+        if _is_social_mp4(src):
+            continue
+        try:
+            results.append(convert_to_social_compatible(src, use_nvenc=use_nvenc))
+        except Exception as e:
+            results.append(
+                {
+                    "input_path": str(src),
+                    "output_path": "",
+                    "validation": {"compatible": False, "issues": [str(e)]},
+                    "error": str(e),
+                }
+            )
+    return results
 
 
 def save_video_thumbnail(video_path, out_path=None, at_sec=0.5):

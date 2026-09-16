@@ -18,7 +18,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from shorts_core import *
 
-APP_VERSION = "0.6"
+APP_VERSION = "0.5.2"
 SETTINGS_FILE = Path(__file__).with_name("settings.json")
 
 BG = "#f4f6fb"
@@ -181,6 +181,9 @@ class App(TkinterDnD.Tk):
         self.dual_candidate_texts_a = [tk.StringVar(value=f"A 후보 {i + 1}: 분석 대기") for i in range(3)]
         self.dual_candidate_texts_b = [tk.StringVar(value=f"B 후보 {i + 1}: 분석 대기") for i in range(3)]
         self.last_dual_outputs_text = tk.StringVar(value="아직 듀얼 제작 결과가 없습니다.")
+        self.social_input_video = tk.StringVar()
+        self.social_batch_folder = tk.StringVar()
+        self.social_status = tk.StringVar(value="SNS 호환 변환 대기")
         self.preview_slot = tk.StringVar(value="single")
         self.channel_name = tk.StringVar(value="My Music Channel")
         self.meta_template = tk.StringVar(value="감성형")
@@ -350,7 +353,7 @@ class App(TkinterDnD.Tk):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=18, pady=(16, 5))
         ttk.Label(top, text="ShortsMaker Studio", style="Title.TLabel").pack(side="left")
-        ttk.Label(top, text="v0.6", style="Version.TLabel").pack(side="left", padx=8, pady=(9, 0))
+        ttk.Label(top, text=f"v{APP_VERSION}", style="Version.TLabel").pack(side="left", padx=8, pady=(9, 0))
         ttk.Label(
             self,
             text="제작 → 자막 → 메타데이터 → ZIP 패키지까지 한 번에",
@@ -668,11 +671,40 @@ class App(TkinterDnD.Tk):
             side="left", fill="x", expand=True, padx=(4, 0)
         )
 
+        social = ttk.LabelFrame(b, text="SNS 호환 변환")
+        social.pack(fill="x", pady=8)
+        self._pathrow(social, "기존 MP4", self.social_input_video, self.pick_social_video, True)
+        sr = ttk.Frame(social)
+        sr.pack(fill="x", padx=8, pady=(2, 6))
+        ttk.Button(sr, text="SNS 호환 변환", command=self.start_social_convert, style="Accent.TButton").pack(
+            side="left", fill="x", expand=True, padx=(0, 4)
+        )
+        ttk.Label(sr, textvariable=self.social_status, style="Muted.TLabel").pack(side="left", padx=8)
+        self._pathrow(social, "MP4 폴더", self.social_batch_folder, self.pick_social_folder, True)
+        br = ttk.Frame(social)
+        br.pack(fill="x", padx=8, pady=(2, 6))
+        ttk.Button(br, text="Batch SNS 호환 변환", command=self.start_batch_social_convert).pack(
+            side="left", fill="x", expand=True
+        )
+        self.social_log = tk.Text(
+            social,
+            height=5,
+            bg="#ffffff",
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground="#dbeafe",
+            relief="flat",
+            wrap="word",
+            padx=10,
+            pady=8,
+        )
+        self.social_log.pack(fill="x", padx=8, pady=(0, 8))
+
         dual = ttk.LabelFrame(b, text="오늘 만든 숏츠 2개")
         dual.pack(fill="x", pady=8)
         ttk.Label(dual, textvariable=self.last_dual_outputs_text, justify="left", wraplength=900).pack(anchor="w", padx=10, pady=10)
 
-        info = ttk.LabelFrame(b, text="v0.6 사용 흐름")
+        info = ttk.LabelFrame(b, text="v0.5.2 사용 흐름")
         info.pack(fill="both", expand=True, pady=8)
         text = (
             "1. 음원 + 이미지 선택\n"
@@ -1054,6 +1086,102 @@ class App(TkinterDnD.Tk):
         if p:
             self.batch_output.set(p)
 
+    def pick_social_video(self):
+        p = filedialog.askopenfilename(filetypes=[("MP4", "*.mp4"), ("All", "*.*")])
+        if p:
+            self.social_input_video.set(p)
+
+    def pick_social_folder(self):
+        p = filedialog.askdirectory()
+        if p:
+            self.social_batch_folder.set(p)
+
+    def _compatibility_status(self, validation):
+        return "PASS" if validation.get("compatible") else "FAIL"
+
+    def _format_compatibility_result(self, validation):
+        status = self._compatibility_status(validation)
+        lines = [f"TikTok / YouTube Shorts 호환성: {status}"]
+        lines.append(
+            f"{validation.get('video_codec') or '-'} {validation.get('resolution') or '-'} "
+            f"{validation.get('fps') or '-'}fps {validation.get('pixel_format') or '-'} "
+            f"{validation.get('color_space') or '-'} / {validation.get('color_range') or '-'}"
+        )
+        lines.append(
+            f"{validation.get('audio_codec') or '-'} {validation.get('sample_rate') or '-'}Hz "
+            f"{validation.get('channels') or '-'}ch"
+        )
+        for issue in validation.get("issues") or []:
+            lines.append(f"* {issue}")
+        return "\n".join(lines)
+
+    def _social_log(self, message):
+        if hasattr(self, "social_log"):
+            self.social_log.insert("end", message + "\n")
+            self.social_log.see("end")
+
+    def start_social_convert(self):
+        src = self.social_input_video.get()
+        if not src or not Path(src).exists():
+            messagebox.showwarning("확인", "변환할 MP4 파일을 선택하세요.")
+            return
+        self.social_status.set("SNS 호환 변환 중")
+        self.status.set("SNS 호환 변환 중")
+        threading.Thread(target=self._social_convert_worker, args=(src,), daemon=True).start()
+
+    def _social_convert_worker(self, src):
+        try:
+            result = convert_to_social_compatible(src, use_nvenc=self.use_nvenc.get())
+            self.after(0, lambda r=result: self._social_convert_done(r))
+        except Exception as e:
+            self.after(
+                0,
+                lambda err=str(e): (
+                    self.social_status.set("SNS 호환 변환 실패"),
+                    self.status.set("SNS 변환 실패"),
+                    self._social_log(f"FAIL: {err}"),
+                    messagebox.showerror("SNS 호환 변환 실패", err),
+                ),
+            )
+
+    def _social_convert_done(self, result):
+        validation = result["validation"]
+        status = self._compatibility_status(validation)
+        output = result["output_path"]
+        self.social_status.set(f"SNS 호환 변환 {status}")
+        self.status.set(f"SNS 호환 변환 {status}")
+        message = f"{output}\n\n{self._format_compatibility_result(validation)}"
+        self._social_log(message)
+        messagebox.showinfo("SNS 호환 변환 완료", message)
+
+    def start_batch_social_convert(self):
+        folder = self.social_batch_folder.get()
+        if not folder or not Path(folder).exists():
+            messagebox.showwarning("확인", "변환할 MP4 폴더를 선택하세요.")
+            return
+        self.social_status.set("Batch SNS 호환 변환 중")
+        self.status.set("Batch SNS 호환 변환 중")
+        threading.Thread(target=self._batch_social_convert_worker, args=(folder,), daemon=True).start()
+
+    def _batch_social_convert_worker(self, folder):
+        results = batch_convert_to_social_compatible(folder, use_nvenc=self.use_nvenc.get())
+        self.after(0, lambda r=results: self._batch_social_convert_done(r))
+
+    def _batch_social_convert_done(self, results):
+        passed = sum(1 for r in results if r.get("validation", {}).get("compatible"))
+        failed = len(results) - passed
+        self.social_status.set(f"Batch 완료: PASS {passed}, FAIL {failed}")
+        self.status.set("Batch SNS 호환 변환 완료")
+        if not results:
+            self._social_log("변환할 MP4가 없습니다.")
+            return
+        for result in results:
+            validation = result.get("validation", {})
+            output = result.get("output_path") or result.get("input_path")
+            self._social_log(f"{self._compatibility_status(validation)}: {output}")
+            for issue in validation.get("issues") or []:
+                self._social_log(f"* {issue}")
+
     def analyze_dual_slot(self, slot):
         audio = self.dual_audio_a.get() if slot == "A" else self.dual_audio_b.get()
         status = self.dual_status_a if slot == "A" else self.dual_status_b
@@ -1212,7 +1340,10 @@ class App(TkinterDnD.Tk):
             if self.auto_meta.get():
                 md = make_metadata(stem, self.channel_name.get(), self.meta_template.get())
                 save_metadata_txt(outdir, f"{stem}_TOP{idx}", md)
-            self.after(0, lambda: (self.p1.stop(), self.status.set("완료"), messagebox.showinfo("완료", str(out))))
+            validation = validate_social_video(out)
+            message = f"{out}\n\n{self._format_compatibility_result(validation)}"
+            done_status = f"완료 / SNS {self._compatibility_status(validation)}"
+            self.after(0, lambda: (self.p1.stop(), self.status.set(done_status), messagebox.showinfo("완료", message)))
         except Exception as e:
             self.after(0, lambda: (self.p1.stop(), self.status.set("실패"), messagebox.showerror("오류", str(e))))
 
@@ -1289,10 +1420,10 @@ class App(TkinterDnD.Tk):
                 done += 1
                 self.after(
                     0,
-                    lambda i=item, d=done, p=result["video"]: (
-                        i["status"].set(f"{i['label']} 완료: {Path(p).name}"),
+                    lambda i=item, d=done, p=result["video"], v=result["validation"]: (
+                        i["status"].set(f"{i['label']} 완료: {Path(p).name} / SNS {self._compatibility_status(v)}"),
                         self.p_dual.configure(value=d),
-                        self._dual_log(f"{i['label']} 완료: {p}"),
+                        self._dual_log(f"{i['label']} 완료: {p}\n{self._format_compatibility_result(v)}"),
                     ),
                 )
             except Exception as e:
@@ -1354,7 +1485,8 @@ class App(TkinterDnD.Tk):
         if self.auto_meta.get():
             md = make_metadata(Path(audio).stem, self.channel_name.get(), self.meta_template.get())
             files.append(save_metadata_txt(outdir, f"{output.stem}_{item['slot']}", md))
-        return {"video": str(output), "files": files}
+        validation = validate_social_video(output)
+        return {"video": str(output), "files": files, "validation": validation}
 
     def _zip_dual_outputs(self, files):
         first_dir = Path(files[0]).parent
@@ -1443,8 +1575,12 @@ class App(TkinterDnD.Tk):
                     if self.auto_meta.get():
                         md = make_metadata(stem, self.channel_name.get(), self.meta_template.get())
                         save_metadata_txt(outdir, f"{stem}_TOP{j + 1}", md)
+                    validation = validate_social_video(out)
+                    compat = self._compatibility_status(validation)
+                    issues = validation.get("issues") or []
+                    detail = "" if not issues else " / " + "; ".join(issues[:2])
                     done += 1
-                    self.after(0, lambda d=done, s=out.name: self._plog(d, total, f"완료: {s}"))
+                    self.after(0, lambda d=done, s=out.name, c=compat, x=detail: self._plog(d, total, f"완료: {s} / SNS {c}{x}"))
             except Exception as e:
                 self.after(0, lambda a=Path(audio).name, err=str(e): self._log(f"실패: {a} / {err}"))
         self.after(0, lambda: self.status.set("중지됨" if self.cancel_requested else "일괄 완료"))
@@ -1493,6 +1629,8 @@ class App(TkinterDnD.Tk):
             "skip_existing": self.skip_existing.get(),
             "output_dir": self.output_dir.get(),
             "batch_output": self.batch_output.get(),
+            "social_input_video": self.social_input_video.get(),
+            "social_batch_folder": self.social_batch_folder.get(),
             "dual_audio_a": self.dual_audio_a.get(),
             "dual_image_a": self.dual_image_a.get(),
             "dual_subtitle_a": self.dual_subtitle_a.get(),

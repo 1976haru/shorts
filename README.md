@@ -1,6 +1,17 @@
-# ShortsMaker Studio v0.6
+# ShortsMaker Studio v0.5.2
 
 ShortsMaker Studio는 음원과 이미지를 9:16 숏츠 영상으로 제작하는 Windows용 도구입니다.
+
+### v0.5.2
+
+* TikTok upload compatibility fix
+* BT.709 color pipeline
+* yuv420p / limited range
+* CFR 30fps
+* AAC-LC 48kHz stereo
+* post-render compatibility validation
+* SNS compatibility converter
+* batch compatibility converter
 
 ## v0.6 핵심 기능
 - 밝은 작업형 Light UI
