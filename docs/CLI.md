@@ -1,4 +1,4 @@
-# ShortsMaker CLI 계약 (shorts_cli.py, job schema `shorts_job.v1`)
+# ShortsMaker CLI 계약 (shorts_cli.py, `shorts_job.v1` / `shorts_batch.v1`)
 
 이 문서는 영상늘리기(github.com/1976haru/long)와 ShortsMaker 사이의 **유일한 연결 계약**입니다.
 영상늘리기는 ShortsMaker 코드를 import하지 않고, 아래 CLI를 별도 프로세스로 실행합니다.
@@ -43,6 +43,13 @@ python shorts_cli.py analyze --audio <path> [--duration 45]
 python shorts_cli.py render --job <job.json> [--no-stdin-cancel]
 ```
 진행 이벤트들을 출력하고, 마지막 줄에 `result` 또는 `error`를 출력합니다.
+
+### 4. batch
+```
+python shorts_cli.py batch --job <batch.json> [--no-stdin-cancel]
+```
+곡 폴더의 곡마다 숏츠 1개를 **순서대로 1개씩**(FFmpeg 동시 1개) 만듭니다.
+마지막 줄은 `batch_result` 또는(작업 자체가 잘못된 경우) `error`입니다. 아래 "일괄 제작" 절 참고.
 
 ## 작업 JSON 스키마 `shorts_job.v1`
 
@@ -117,17 +124,96 @@ python shorts_cli.py render --job <job.json> [--no-stdin-cancel]
 {"event":"error","ok":false,"code":"highlight_out_of_range","message":"선택 구간(30.0~50.0초)이 곡 길이(40.0초)를 넘습니다."}
 ```
 
+## 일괄 제작 (batch, `shorts_batch.v1`)
+
+### 스키마
+
+| 키 | 필수 | 형식 / 범위 | 기본값 | 설명 |
+|---|---|---|---|---|
+| `schema` | ✅ | `"shorts_batch.v1"` | — | |
+| `audio_dir` | ✅¹ | 폴더 경로 | — | 음원 폴더(하위 폴더는 보지 않음). 음원 확장자 파일만 사용 |
+| `audio_files` | ✅¹ | 경로 목록 | — | 직접 지정. 적은 순서대로 처리 |
+| `background_dir` | ✅² | 폴더 경로 | — | 배경 영상 폴더(`.mp4 .mov .m4v .mkv .webm`만) |
+| `background_files` | ✅² | 경로 목록 | — | 직접 지정 |
+| `output_dir` | ✅ | 폴더 경로 | — | 없으면 만듭니다 |
+| `duration` `start` `highlight_rank` `fit_mode` `fade_sec` `use_nvenc` | | | | `shorts_job.v1`과 같은 의미·기본값·검증 (`start` 기본 `"auto"`, `fit_mode` 기본 `"blur"`) |
+| `assign` |  | `"rotate"` \| `"random"` | `"rotate"` | 배경 배정 방식 |
+| `seed` |  | 정수 \| `null` | `null` | `random` 배정과 `video_offset:"random"`의 재현용. `null`이면 시간 기반(실제 값은 `batch_start.seed`) |
+| `video_offset` |  | `"random"` \| 숫자 ≥ 0 | `"random"` | `"random"`: 곡마다 0 ~ (배경 길이 − 1초)에서 고름 |
+| `name_template` |  | 문자열 | `"{stem}_short"` | `{stem}` 곡 파일명(확장자 제외), `{index}` 01부터 2자리, `{bg}` 배경 파일명(확장자 제외). 결과에 `.mp4`를 붙임 |
+| `skip_existing` |  | `true` \| `false` | `true` | 같은 이름 출력이 있으면 건너뜀. `false`면 `_1`, `_2` …를 붙여 새로 만듦 |
+
+¹ `audio_dir`와 `audio_files` 중 **정확히 하나**. ² `background_dir`와 `background_files` 중 **정확히 하나**. 둘 다 있거나 둘 다 없으면 `invalid_job`.
+
+```json
+{
+  "schema": "shorts_batch.v1",
+  "audio_dir": "D:/suno/1228",
+  "background_dir": "D:/bg",
+  "output_dir": "D:/out/1228_shorts",
+  "duration": 45, "start": "auto", "highlight_rank": 1, "fit_mode": "blur", "fade_sec": 0.5, "use_nvenc": false,
+  "assign": "random", "seed": null, "video_offset": "random",
+  "name_template": "{index}_{stem}_short", "skip_existing": true
+}
+```
+
+- 상대 경로는 batch.json 폴더 기준. 모르는 키는 `batch_result.warnings`에 `"unknown_key:<이름>"`.
+- 폴더 스캔은 **자연 정렬**합니다(`2 - a.wav`가 `10 - b.wav`보다 앞). 대상 파일이 0개면 `invalid_job`, 폴더가 없으면 `input_not_found`.
+- 배정
+  - `rotate`: 정렬된 배경을 순서대로 반복(곡1=배경1, 곡2=배경2, …, 배경 수를 넘으면 처음부터).
+  - `random`: 배경 목록을 seed로 섞은 묶음을 이어 붙입니다. 배경이 2개 이상이면 **같은 배경이 연속으로 나오지 않고**, 각 배경이 고르게 쓰입니다.
+- 파일명: `name_template` 결과에서 Windows 금지 문자(`< > : " / \ | ? *`, 제어 문자)를 지우고, 끝의 점·공백을 없애며, `CON`·`NUL` 같은 예약 이름은 앞에 `_`를 붙입니다.
+  여러 곡의 결과 이름이 같아지면(예: `{stem}` 없이 고정 이름) 렌더 전에 `invalid_job`.
+- 시작 전 검사: 배경 영상은 모두 미리 검사합니다(손상된 배경 → `invalid_job`, 소리 있는 배경 → `warnings`에 `"background_audio_ignored:<파일명>"`).
+  곡별 검사(길이, 하이라이트 범위, 손상 파일)는 그 곡 차례에 하며, 실패해도 다음 곡을 계속합니다.
+
+### 이벤트
+
+```json
+{"event":"batch_start","total":15,"output_dir":"D:\\out\\1228_shorts","assign":"random","seed":1234,"csv":"D:\\out\\1228_shorts\\shorts_batch_20261119_210959.csv"}
+{"event":"item_start","index":1,"total":15,"audio":"D:\\suno\\1228\\01 - a.wav","background":"D:\\bg\\lake.mp4","video_offset":12.345}
+{"event":"progress","index":1,"value":0.42,"overall":0.028}
+{"event":"item_result","index":1,"ok":true,"output":"D:\\out\\1228_shorts\\01 - a_short.mp4","start":82.0,"elapsed_sec":38.1,"warnings":[]}
+{"event":"item_start","index":2,"total":15,"audio":"...","background":"...","video_offset":3.21}
+{"event":"item_result","index":2,"ok":false,"code":"invalid_job","message":"음원에 오디오 스트림이 없습니다: 02 - b.wav"}
+{"event":"item_start","index":3,"total":15,"audio":"...","background":"...","video_offset":7.5}
+{"event":"item_result","index":3,"ok":true,"skipped":true,"output":"D:\\out\\1228_shorts\\03 - c_short.mp4"}
+{"event":"batch_result","ok":false,"done":13,"failed":1,"skipped":1,"csv":"D:\\out\\1228_shorts\\shorts_batch_20261119_210959.csv","elapsed_sec":602.4,"warnings":[]}
+```
+
+- `batch_start`는 시작 전 검사를 모두 통과한 뒤 1회. `seed`는 실제로 사용한 값, `csv`는 로그 경로.
+- `item_start`는 건너뛰는 곡을 포함해 모든 곡에 1회씩 나오고, 그 뒤에 그 곡의 `item_result`가 나옵니다.
+- `progress`: `value`는 현재 곡의 진행률, `overall`은 전체 진행률(건너뛴·실패한 곡은 끝난 것으로 셈). 둘 다 단조 증가하며 `value`가 0.02 이상 커졌을 때만 나옵니다.
+- 곡 실패의 `code`는 단일 render와 같은 값입니다: `invalid_job`(손상된 음원 등), `input_not_found`, `audio_too_short`, `highlight_out_of_range`, `render_failed`, `internal_error`.
+- `batch_result.ok`는 실패 0개이고 취소되지 않았을 때 `true`. `done` = 새로 만든 개수, `skipped` = 건너뛴 개수.
+- 취소되면 `batch_result`에 `"cancelled":true, "cancelled_remaining":<n>, "code":"cancelled"`가 붙습니다.
+  `cancelled_remaining`은 **렌더 중이던 곡 + 시작하지 않은 곡**의 개수이며, 이 곡들은 `item_result`가 나오지 않습니다.
+- 시작 전 검사에서 실패하면(작업 오류, 폴더 없음) `batch_start` 없이 `error` 한 줄만 나옵니다.
+
+### 취소
+- 단일 render와 같습니다: stdin `cancel` 한 줄 또는 stdin EOF.
+- 진행 중인 곡의 FFmpeg를 멈추고 그 곡의 `*.part.mp4`를 지운 뒤 즉시 끝납니다. **이미 완성된 숏츠는 그대로 남습니다.**
+- 같은 batch.json을 다시 실행하면(`skip_existing:true`) 완성된 곡은 건너뛰고 나머지만 이어서 만듭니다.
+  (`seed:null`이면 다시 실행할 때 배정이 달라질 수 있으므로, 이어 만들기가 필요하면 `batch_start.seed` 값을 job에 적어 두세요.)
+
+### CSV 로그
+- `output_dir/shorts_batch_YYYYMMDD_HHMMSS.csv` (같은 초에 또 실행하면 `_1`…), UTF-8 BOM(엑셀에서 한글이 깨지지 않음).
+- 열: `index, audio, background, video_offset, start, duration, fit_mode, status, output, code, message, elapsed_sec`
+- `status`: `ok` | `failed` | `skipped` | `cancelled`(렌더 중 취소된 곡). 시작하지 않은 곡은 행이 없습니다.
+- 곡이 끝날 때마다 한 줄씩 바로 기록하고 디스크에 flush합니다(중간에 프로세스가 죽어도 끝난 곡까지 남음).
+
 ## 종료 코드
 
 | exit | `code` | 의미 | 재시도 |
 |---|---|---|---|
-| 0 | — | 성공 (`result`) | — |
+| 0 | — | 성공 (`result`). batch는 모든 곡 성공 또는 건너뜀 | — |
 | 2 | `invalid_job` | 작업 JSON 형식·값 오류, 잘못된 명령줄 인자, 손상된 입력 | 작업 수정 필요 |
 | 2 | `highlight_out_of_range` | 숫자 `start` 구간이 곡 길이를 넘음 | 작업 수정 필요 |
 | 2 | `audio_too_short` | 곡 길이가 duration보다 짧음 | 작업 수정 필요 |
-| 3 | `input_not_found` | 작업·음원·배경·자막 파일 없음 | 파일 확인 |
+| 3 | `input_not_found` | 작업·음원·배경·자막 파일 없음, batch의 폴더 없음 | 파일 확인 |
 | 4 | `render_failed` | FFmpeg 실패 또는 SNS 호환 검증 실패 | 가능 |
 | 5 | `cancelled` | stdin `cancel` / stdin EOF / Ctrl+C | — |
+| 6 | — (batch 전용) | 일부 곡 실패. `batch_result.failed` ≥ 1, 나머지 곡은 완성됨 | 같은 batch.json 재실행 시 실패한 곡만 다시 시도 (`skip_existing`) |
 | 1 | `internal_error` | 그 밖의 예외 (예: 분석에 필요한 librosa 없음) | 로그(stderr) 확인 |
 
 ## 취소
@@ -146,6 +232,7 @@ cd /d D:\03_shorts
 .venv\Scripts\python.exe shorts_cli.py version
 .venv\Scripts\python.exe shorts_cli.py analyze --audio "D:\music\01_song.wav" --duration 45
 .venv\Scripts\python.exe shorts_cli.py render --job "D:\jobs\01_song.json"
+.venv\Scripts\python.exe shorts_cli.py batch --job "D:\jobs\1228_batch.json"
 ```
 
 Python 호출 측 예 (영상늘리기):

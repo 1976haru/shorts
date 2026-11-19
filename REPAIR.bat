@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title ShortsMaker Studio v0.7.1 Repair
+title ShortsMaker Studio v0.8.0 Repair
 
 echo Removing broken virtual environment...
 if exist ".venv" rmdir /s /q ".venv"
