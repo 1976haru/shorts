@@ -1621,3 +1621,36 @@ def render_video_short(
             reader.join(timeout=5)
         if not succeeded:
             _remove_quietly(part)
+
+
+# --- headless helpers (v0.7.1) ---
+
+
+def probe_audio_duration(audio_path):
+    """Return the audio length in seconds (ffprobe, no decoding)."""
+    path = Path(audio_path)
+    if not path.exists():
+        raise FileNotFoundError(f"음원 파일이 없습니다: {path}")
+    probe = _probe_media(path)
+    streams = (probe or {}).get("streams") or []
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if not audio:
+        raise ValueError(f"음원에 오디오 스트림이 없습니다: {path.name}")
+    fmt = (probe or {}).get("format") or {}
+    for raw in (fmt.get("duration"), audio.get("duration")):
+        try:
+            duration = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            return round(duration, 3)
+    raise ValueError(f"음원 길이를 확인할 수 없습니다: {path.name}")
+
+
+def nvenc_available_no_window():
+    """Same check as nvenc_available, without flashing a console on Windows."""
+    try:
+        p = _run_capture([ffmpeg_path(), "-hide_banner", "-encoders"])
+        return "h264_nvenc" in ((p.stdout or "") + (p.stderr or ""))
+    except Exception:
+        return False

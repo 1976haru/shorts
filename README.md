@@ -1,6 +1,13 @@
-# ShortsMaker Studio v0.7.0
+# ShortsMaker Studio v0.7.1
 
 ShortsMaker Studio는 음원과 이미지를 9:16 숏츠 영상으로 제작하는 Windows용 도구입니다.
+
+## v0.7.1 화면 없는 실행 (CLI)
+- `.venv\Scripts\python.exe shorts_cli.py version` — 엔진 버전 확인
+- `.venv\Scripts\python.exe shorts_cli.py analyze --audio 곡.wav --duration 45` — TOP3 하이라이트 후보
+- `.venv\Scripts\python.exe shorts_cli.py render --job job.json` — 작업 JSON(`shorts_job.v1`)으로 숏츠 1개 제작, 진행률/결과를 JSON Lines로 출력
+
+입력 스키마, 이벤트, 종료 코드, 취소 방법은 [docs/CLI.md](docs/CLI.md)를 참고하세요.
 
 ## v0.7.0 엔진: 영상 배경 렌더(UI 연결은 다음 단계)
 - `shorts_core.render_video_short`: 소리 없는 루프 배경 영상(16:9 또는 9:16 MP4) + 음원 하이라이트 → 9:16 숏츠 (`crop` / `blur` 맞춤)

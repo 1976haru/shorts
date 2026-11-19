@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title ShortsMaker Studio v0.7.0
+title ShortsMaker Studio v0.7.1
 
 if not exist ".venv\Scripts\python.exe" (
     echo ERROR: Virtual environment not found.

@@ -68,27 +68,36 @@ class BatchFileTests(unittest.TestCase):
                 self.assertTrue(data.isascii(), f"non-ASCII content in {path.name}")
 
 
-class EngineIsolationTests(unittest.TestCase):
-    def test_shorts_core_has_no_gui_imports(self):
-        tree = ast.parse((ROOT / "shorts_core.py").read_text(encoding="utf-8"))
-        found = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""]
-            else:
-                continue
-            for name in names:
-                if name.split(".")[0] in GUI_MODULES:
-                    found.append(name)
-        self.assertEqual(found, [])
+ENGINE_FILES = ("shorts_core.py", "shorts_cli.py")
+ENGINE_FORBIDDEN = GUI_MODULES + ("app",)
 
-    def test_import_shorts_core_does_not_load_gui_modules(self):
+
+class EngineIsolationTests(unittest.TestCase):
+    def test_engine_files_have_no_gui_imports(self):
+        for filename in ENGINE_FILES:
+            with self.subTest(file=filename):
+                tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
+                found = []
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        names = [alias.name for alias in node.names]
+                    elif isinstance(node, ast.ImportFrom):
+                        names = [node.module or ""]
+                    else:
+                        continue
+                    for name in names:
+                        if name.split(".")[0] in ENGINE_FORBIDDEN:
+                            found.append(name)
+                self.assertEqual(found, [])
+
+    def test_import_engine_does_not_load_gui_modules(self):
+        # shorts_cli reroutes sys.stdout to stderr on import, so keep a handle.
         code = (
-            "import sys, shorts_core\n"
-            f"loaded = [m for m in {GUI_MODULES!r} if m in sys.modules]\n"
-            "print(','.join(loaded))\n"
+            "import sys\n"
+            "out = sys.stdout\n"
+            "import shorts_core, shorts_cli\n"
+            f"loaded = [m for m in {ENGINE_FORBIDDEN!r} if m in sys.modules]\n"
+            "out.write(','.join(loaded) + '\\n')\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", code],
