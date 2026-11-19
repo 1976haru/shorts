@@ -1,9 +1,9 @@
 @echo off
 setlocal
-title ShortsMaker Studio v0.5.1 Installer
+title ShortsMaker Studio v0.6.1 Installer
 
 echo ============================================
-echo ShortsMaker Studio v0.5.1 Installer
+echo ShortsMaker Studio v0.6.1 Installer
 echo ============================================
 echo.
 

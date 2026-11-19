@@ -18,7 +18,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from shorts_core import *
 
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.6.1"
 SETTINGS_FILE = Path(__file__).with_name("settings.json")
 
 BG = "#f4f6fb"
@@ -704,7 +704,7 @@ class App(TkinterDnD.Tk):
         dual.pack(fill="x", pady=8)
         ttk.Label(dual, textvariable=self.last_dual_outputs_text, justify="left", wraplength=900).pack(anchor="w", padx=10, pady=10)
 
-        info = ttk.LabelFrame(b, text="v0.5.2 사용 흐름")
+        info = ttk.LabelFrame(b, text=f"v{APP_VERSION} 사용 흐름")
         info.pack(fill="both", expand=True, pady=8)
         text = (
             "1. 음원 + 이미지 선택\n"
