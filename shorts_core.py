@@ -1267,3 +1267,357 @@ def zip_outputs(output_dir, zip_path=None):
             if p.is_file() and p.resolve() != Path(zip_path).resolve():
                 z.write(p, p.relative_to(out))
     return zip_path
+
+
+# --- video background (v0.7.0) ---
+
+import threading as _threading
+from collections import deque as _deque
+from queue import Empty as _QueueEmpty
+from queue import Queue as _Queue
+
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
+VIDEO_FIT_MODES = ("crop", "blur")
+VIDEO_SHORT_MIN_DURATION = 15.0
+VIDEO_SHORT_MAX_DURATION = 60.0
+
+
+class RenderCancelled(Exception):
+    """Raised when a render is cancelled through cancel_event."""
+
+
+def probe_background_video(video_path):
+    """Return width/height/duration/fps/has_audio of a background clip.
+
+    An audio track in the clip is not an error: it is reported through
+    has_audio so the caller can warn, and it is never mapped into output.
+    """
+    path = Path(video_path)
+    if not path.exists():
+        raise FileNotFoundError(f"배경 영상 파일이 없습니다: {path}")
+    probe = _probe_media(path)
+    streams = (probe or {}).get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if not video:
+        raise ValueError(f"배경 영상에 영상 스트림이 없습니다: {path.name}")
+
+    fmt = (probe or {}).get("format") or {}
+    duration = None
+    for raw in (fmt.get("duration"), video.get("duration")):
+        try:
+            duration = float(raw)
+            break
+        except (TypeError, ValueError):
+            continue
+    if duration is None or duration < 1.0:
+        raise ValueError(f"배경 영상 길이가 1초 미만이거나 확인할 수 없습니다: {path.name}")
+
+    fps = _parse_rate(video.get("avg_frame_rate")) or _parse_rate(video.get("r_frame_rate"))
+    return {
+        "width": int(video.get("width") or 0),
+        "height": int(video.get("height") or 0),
+        "duration": round(duration, 3),
+        "fps": round(fps, 3) if fps else None,
+        "has_audio": any(s.get("codec_type") == "audio" for s in streams),
+    }
+
+
+def _check_video_short_args(start, duration, fit_mode, video_offset):
+    if fit_mode not in VIDEO_FIT_MODES:
+        raise ValueError(f"fit_mode는 {', '.join(VIDEO_FIT_MODES)} 중 하나여야 합니다: {fit_mode!r}")
+    duration = float(duration)
+    if not (VIDEO_SHORT_MIN_DURATION <= duration <= VIDEO_SHORT_MAX_DURATION):
+        raise ValueError(
+            f"duration은 {VIDEO_SHORT_MIN_DURATION:g}~{VIDEO_SHORT_MAX_DURATION:g}초여야 합니다: {duration:g}"
+        )
+    video_offset = float(video_offset)
+    if video_offset < 0:
+        raise ValueError(f"video_offset은 0 이상이어야 합니다: {video_offset:g}")
+    start = float(start)
+    if start < 0:
+        raise ValueError(f"start는 0 이상이어야 합니다: {start:g}")
+    return start, duration, video_offset
+
+
+def build_render_video_short_command(
+    audio_path,
+    video_path,
+    output_path,
+    start,
+    duration,
+    fit_mode="crop",
+    video_offset=0.0,
+    fade_sec=0.5,
+    subtitle_path="",
+    subtitle_position="safe_bottom",
+    subtitle_size="medium",
+    subtitle_style="emotional",
+    use_nvenc=False,
+    nvenc_available_fn=None,
+):
+    """FFmpeg command: looping silent background clip + audio highlight -> 9:16 short.
+
+    Only the background video stream (0:v:0, via [v]) and the music track
+    (1:a:0) are mapped; any audio inside the background clip is ignored.
+    """
+    start, duration, video_offset = _check_video_short_args(start, duration, fit_mode, video_offset)
+    width = int(SOCIAL_WIDTH)
+    height = int(SOCIAL_HEIGHT)
+    fade_sec = max(0.0, min(float(fade_sec), duration / 4))
+
+    if fit_mode == "blur":
+        graph = (
+            f"[0:v:0]split=2[bgsrc][fgsrc];"
+            f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},boxblur=30:5[bg];"
+            f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2"
+        )
+    else:
+        graph = (
+            f"[0:v:0]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height}"
+        )
+
+    if subtitle_path and Path(subtitle_path).exists():
+        sp = _filter_path(subtitle_path)
+        style = _subtitle_force_style(subtitle_position, subtitle_size, subtitle_style)
+        graph += f",subtitles='{sp}':force_style='{style}'"
+
+    if fade_sec > 0:
+        fo = max(0.0, duration - fade_sec)
+        graph += f",fade=t=in:st=0:d={fade_sec},fade=t=out:st={fo}:d={fade_sec}"
+        af = f"afade=t=in:st=0:d={fade_sec},afade=t=out:st={fo}:d={fade_sec}"
+    else:
+        af = "anull"
+
+    graph = social_video_filter(graph, SOCIAL_FPS, width, height) + "[v]"
+    af = social_audio_filter(af)
+
+    cmd = [
+        ffmpeg_path(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-stream_loop",
+        "-1",
+        "-ss",
+        f"{video_offset:.3f}",
+        "-i",
+        str(video_path),
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        str(audio_path),
+        "-filter_complex",
+        graph,
+        "-map",
+        "[v]",
+        "-map",
+        "1:a:0",
+        "-af",
+        af,
+        "-t",
+        f"{duration:.3f}",
+    ]
+    cmd += social_video_encode_args(use_nvenc=use_nvenc, fps=SOCIAL_FPS, nvenc_available_fn=nvenc_available_fn)
+    cmd += social_audio_encode_args()
+    cmd += social_mp4_output_args()
+    cmd += [str(output_path)]
+    return cmd
+
+
+def _numbered_output_path(path):
+    """path if free, else path_1, path_2, ... (never overwrites)."""
+    out = Path(path)
+    if not out.exists():
+        return out
+    n = 1
+    while True:
+        candidate = out.with_name(f"{out.stem}_{n}{out.suffix}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _part_path(final_path):
+    p = Path(final_path)
+    return p.with_name(f"{p.stem}.part{p.suffix or '.mp4'}")
+
+
+def _remove_quietly(path):
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def _progress_seconds(key, value):
+    if key not in ("out_time_us", "out_time_ms") or value in ("", "N/A"):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    # FFmpeg writes both out_time_us and out_time_ms in microseconds
+    # (out_time_ms is a historical misnomer), so both are divided by 1e6.
+    return number / 1_000_000
+
+
+def _pump_lines(stream, sink):
+    try:
+        for line in iter(stream.readline, ""):
+            sink(line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def render_video_short(
+    audio_path,
+    video_path,
+    output_path,
+    start,
+    duration,
+    fit_mode="crop",
+    video_offset=0.0,
+    fade_sec=0.5,
+    subtitle_path="",
+    subtitle_position="safe_bottom",
+    subtitle_size="medium",
+    subtitle_style="emotional",
+    use_nvenc=False,
+    nvenc_available_fn=None,
+    progress_cb=None,
+    cancel_event=None,
+):
+    """Render a video-background short, validate it, and return a result dict.
+
+    Progress is reported through progress_cb(fraction 0.0~1.0). Setting
+    cancel_event stops FFmpeg, removes the partial file and raises
+    RenderCancelled. The output never overwrites an existing file.
+    """
+    start, duration, video_offset = _check_video_short_args(start, duration, fit_mode, video_offset)
+    audio = Path(audio_path)
+    video = Path(video_path)
+    if not audio.exists():
+        raise FileNotFoundError(f"음원 파일이 없습니다: {audio}")
+
+    requested = Path(output_path)
+    inputs = {audio.resolve(), video.resolve()}
+    if requested.resolve() in inputs:
+        raise ValueError("출력 경로가 입력 파일과 같습니다. 원본을 덮어쓸 수 없습니다.")
+
+    background = probe_background_video(video)
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise RenderCancelled("렌더가 취소되었습니다.")
+
+    requested.parent.mkdir(parents=True, exist_ok=True)
+    final = _numbered_output_path(requested)
+    part = _part_path(final)
+    if part.resolve() in inputs:
+        raise ValueError("임시 출력 경로가 입력 파일과 같습니다.")
+
+    cmd = build_render_video_short_command(
+        audio,
+        video,
+        part,
+        start,
+        duration,
+        fit_mode=fit_mode,
+        video_offset=video_offset,
+        fade_sec=fade_sec,
+        subtitle_path=subtitle_path,
+        subtitle_position=subtitle_position,
+        subtitle_size=subtitle_size,
+        subtitle_style=subtitle_style,
+        use_nvenc=use_nvenc,
+        nvenc_available_fn=nvenc_available_fn,
+    )
+    cmd = cmd[:-1] + ["-progress", "pipe:1", "-nostats"] + cmd[-1:]
+
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+    def report(value):
+        if progress_cb is not None:
+            progress_cb(max(0.0, min(1.0, float(value))))
+
+    stderr_tail = _deque(maxlen=200)
+    stdout_lines = _Queue()
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kw,
+    )
+    readers = [
+        _threading.Thread(target=_pump_lines, args=(proc.stderr, stderr_tail.append), daemon=True),
+        _threading.Thread(target=_pump_lines, args=(proc.stdout, stdout_lines.put), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    succeeded = False
+    try:
+        report(0.0)
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                proc.kill()
+                proc.wait()
+                raise RenderCancelled("렌더가 취소되었습니다.")
+            try:
+                line = stdout_lines.get(timeout=0.1)
+            except _QueueEmpty:
+                if proc.poll() is not None and not readers[1].is_alive() and stdout_lines.empty():
+                    break
+                continue
+            key, _, value = line.strip().partition("=")
+            seconds = _progress_seconds(key, value.strip())
+            if seconds is not None:
+                report(min(seconds / duration, 0.99))
+
+        proc.wait()
+        for reader in readers:
+            reader.join(timeout=5)
+        if proc.returncode != 0:
+            tail = "".join(stderr_tail)[-5000:]
+            raise RuntimeError(tail or f"FFmpeg 실행 오류 (code {proc.returncode})")
+
+        validation = validate_social_video(part, min_duration=duration - 0.5, max_duration=duration + 0.5)
+        if not validation["compatible"]:
+            err = RuntimeError("SNS 호환 검증 실패: " + "; ".join(validation["issues"]))
+            err.issues = list(validation["issues"])
+            err.validation = validation
+            raise err
+
+        if final.exists():
+            final = _numbered_output_path(final)
+        os.replace(part, final)
+        succeeded = True
+        report(1.0)
+        return {
+            "output": str(final),
+            "duration": validation["duration"],
+            "background_had_audio": bool(background["has_audio"]),
+            "validation": validation,
+        }
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for reader in readers:
+            reader.join(timeout=5)
+        if not succeeded:
+            _remove_quietly(part)

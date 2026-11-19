@@ -18,7 +18,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from shorts_core import *
 
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.7.0"
 SETTINGS_FILE = Path(__file__).with_name("settings.json")
 
 BG = "#f4f6fb"

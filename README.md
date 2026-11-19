@@ -1,6 +1,11 @@
-# ShortsMaker Studio v0.6.1
+# ShortsMaker Studio v0.7.0
 
 ShortsMaker Studio는 음원과 이미지를 9:16 숏츠 영상으로 제작하는 Windows용 도구입니다.
+
+## v0.7.0 엔진: 영상 배경 렌더(UI 연결은 다음 단계)
+- `shorts_core.render_video_short`: 소리 없는 루프 배경 영상(16:9 또는 9:16 MP4) + 음원 하이라이트 → 9:16 숏츠 (`crop` / `blur` 맞춤)
+- 배경 영상의 오디오는 출력에 섞이지 않으며, 진행률 콜백·취소·SNS 호환 자동 검증을 지원합니다.
+- 화면(app.py)에서는 아직 사용할 수 없습니다.
 
 ## v0.6.1 — 현재 기능
 - SNS 호환 영상 파이프라인: BT.709 색공간, yuv420p / limited range, CFR 30fps, AAC-LC 48kHz stereo, faststart
